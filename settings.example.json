@@ -1,0 +1,4 @@
+{
+  "default_key": "%USERPROFILE%/.ssh/id_ed25519_sk",
+  "max_inline": 67108864
+}

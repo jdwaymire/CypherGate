@@ -1,0 +1,25 @@
+# --- Secrets and per-machine state. Never commit these. ---
+secrets.enc
+state/
+logs/
+known_hosts
+askpass.cmd
+
+# --- Written by the app at runtime; ship the .example.json instead. ---
+hosts.json
+settings.json
+snippets.json
+
+# --- Python ---
+# NOT *.py[cod]: that also matches .pyd, and python/ ships 20 .pyd extension
+# modules (_socket, _ssl, ...) that a clone needs to run at all.
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Editors / OS ---
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

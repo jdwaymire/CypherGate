@@ -1,0 +1,2048 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>CypherGate</title>
+<link rel="stylesheet" href="/static/xterm.css">
+<script src="/static/xterm.js"></script>
+<script src="/static/xterm-addon-fit.js"></script>
+<script src="/static/xterm-addon-search.js"></script>
+<script src="/static/xterm-addon-web-links.js"></script>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --edge: #2c313c;
+    --fg: #d7dce5; --dim: #7f8896; --accent: #6ea8fe; --live: #4ade80; --dead: #f87171;
+    /* Blue is the cursor and every control, green is a live session, red a
+       dead one. Ochre was the one unclaimed slot, so it means "not you". */
+    --api: #e0a458;
+    --side: 290px; --rail: 46px;
+  }
+  * { box-sizing: border-box; }
+  /* Several rules below set display on labels, which outranks the UA
+     stylesheet's [hidden] { display: none } and silently strands the
+     attribute -- that is why the certificate and password fields used to
+     show whatever the auth dropdown said. Settle it once, for everything. */
+  [hidden] { display: none !important; }
+  body { margin: 0; height: 100vh; display: flex; overflow: hidden;
+         background: var(--bg); color: var(--fg);
+         font: 13px/1.5 "Segoe UI", system-ui, sans-serif; }
+
+  /* ---- sidebar ---- */
+  #side { width: var(--side); flex: none; display: flex; flex-direction: column;
+          background: var(--panel); border-right: 1px solid var(--edge);
+          transition: width .15s ease; overflow: hidden; }
+  #side.collapsed { width: var(--rail); }
+  .side-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+               border-bottom: 1px solid var(--edge); }
+  .side-head h1 { font-size: 13px; font-weight: 600; margin: 0; flex: 1;
+                  white-space: nowrap; letter-spacing: .02em; }
+  #side.collapsed .side-head h1 { display: none; }
+  #side.collapsed .side-head { padding: 10px 0; justify-content: center; }
+  .icon-btn { background: transparent; border: 1px solid transparent; color: var(--dim);
+              border-radius: 6px; padding: 3px 7px; cursor: pointer; font-size: 14px; }
+  .icon-btn:hover { color: var(--fg); border-color: var(--edge); }
+
+  .sections { flex: 1; overflow-y: auto; overflow-x: hidden; }
+  .sec-btn { display: flex; align-items: center; gap: 9px; width: 100%;
+             padding: 9px 12px; background: transparent; border: 0;
+             border-bottom: 1px solid var(--edge); color: var(--fg);
+             cursor: pointer; text-align: left; font-weight: 600; }
+  .sec-btn:hover { background: #232833; }
+  .sec-btn .ico { width: 18px; text-align: center; flex: none; color: var(--accent); }
+  .sec-btn.on { background: #232833; }
+  #side.collapsed .sec-btn { justify-content: center; padding: 11px 0; }
+  #side.collapsed .sec-btn .lbl { display: none; }
+  .sec-body { display: none; padding: 10px 12px 14px;
+              border-bottom: 1px solid var(--edge); background: #191c22; }
+  .sec-body.open { display: block; }
+  #side.collapsed .sec-body { display: none !important; }
+  .sec-body label { display: block; color: var(--dim); margin: 0 0 7px; }
+  .sec-body label input, .sec-body label select { width: 100%; margin-top: 2px; }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+  .hint { color: var(--dim); font-size: 12px; margin: 6px 0 0; }
+
+  /* Saved hosts are the common case and stay in view; the ad-hoc form is the
+     rare one and folds away behind this. */
+  .disclose { display: flex; align-items: center; gap: 7px; width: 100%;
+              padding: 6px 9px; margin-top: 2px; font-size: 12px;
+              background: transparent; color: var(--dim);
+              border: 1px dashed var(--edge); border-radius: 6px; }
+  .disclose:hover { color: var(--fg); border-color: var(--accent); }
+  .disclose .chev { font-size: 9px; transition: transform .15s ease; }
+  .disclose.open { color: var(--fg); border-style: solid; }
+  .disclose.open .chev { transform: rotate(90deg); }
+  #c-adhoc, #f-inband { margin-top: 11px; padding-top: 11px;
+             border-top: 1px solid var(--edge); }
+
+  /* ---- main ---- */
+  main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .tabs { display: flex; gap: 4px; padding: 8px 10px; background: var(--panel);
+          border-bottom: 1px solid var(--edge); overflow-x: auto; min-height: 41px; }
+  .tab { display: flex; align-items: center; gap: 7px; padding: 4px 10px;
+         background: #232833; border: 1px solid var(--edge); border-radius: 6px;
+         cursor: pointer; white-space: nowrap; }
+  .tab.active { background: #2d3546; border-color: var(--accent); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--live); flex: none; }
+  .dot.dead { background: var(--dead); }
+  .tab .act { color: var(--dim); font-size: 14px; line-height: 1; }
+  .tab .act:hover { color: var(--fg); }
+
+  #panes { flex: 1; position: relative; min-height: 0; }
+  .pane { position: absolute; inset: 0; padding: 6px; display: none; }
+  .pane.active { display: block; }
+  .pane .xterm { height: 100%; }
+  /* A stretch the API produced. The decoration layer is absolutely
+     positioned and sits after .xterm-rows, so it paints OVER the glyphs --
+     `layer: 'bottom'` does not change that in this build, and 3px of a 7px
+     cell is enough to turn "web-01" into "eb-01". Lift the text above it
+     instead, which is what lets the bar sit behind column one at all. */
+  .xterm .xterm-rows { position: relative; z-index: 3; }
+  .xterm .api-line {
+    /* xterm stamps z-index 6 on a decoration inline, and `layer: 'bottom'`
+       does not change it in this build -- so the bar painted over the glyphs
+       and 3px of a 7px cell turned "web-01" into "eb-01". Drop only OUR
+       decorations below the rows above; the search addon's own stay put. */
+    z-index: 0 !important;
+    background: rgba(224, 164, 88, .10);
+    box-shadow: inset 3px 0 0 var(--api);
+  }
+  .pane.drop { outline: 2px dashed var(--accent); outline-offset: -6px; }
+  #empty { display: grid; place-items: center; height: 100%; color: var(--dim);
+           text-align: center; line-height: 2; }
+  code { background: var(--panel); padding: 2px 6px; border-radius: 4px; color: var(--fg); }
+
+  #find { position: absolute; top: 10px; right: 18px; z-index: 5; display: none;
+          gap: 6px; align-items: center; padding: 7px 9px; background: var(--panel);
+          border: 1px solid var(--edge); border-radius: 8px;
+          box-shadow: 0 6px 18px rgba(0,0,0,.45); }
+  #find.open { display: flex; }
+
+  footer { padding: 5px 12px; background: var(--panel); border-top: 1px solid var(--edge);
+           color: var(--dim); font-size: 12px; display: flex;
+           justify-content: space-between; gap: 12px; }
+
+  button, input, select { font: inherit; }
+  button { background: #2d3546; color: var(--fg); border: 1px solid var(--edge);
+           border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.ghost { background: transparent; color: var(--dim); }
+  input, select { background: #10131a; color: var(--fg); border: 1px solid var(--edge);
+                  border-radius: 6px; padding: 5px 8px; }
+  /* An equal-column grid rather than flex-wrap: host names vary from three to
+     eight characters, and pills sized to their text leave a ragged right edge
+     on every row. Columns adapt to the container, so the same rule gives two
+     across the sidebar and four or five across a settings pane. */
+  .chips { display: grid; gap: 6px; margin-bottom: 10px;
+           grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); }
+  /* the "no saved hosts" placeholder is a bare span, not a chip */
+  .chips > span { grid-column: 1 / -1; color: var(--dim); }
+  .chip { display: flex; align-items: center; gap: 6px; min-height: 28px;
+          padding: 4px 9px; background: #232833; border: 1px solid var(--edge);
+          border-radius: 6px; cursor: pointer; font-size: 12px;
+          white-space: nowrap; overflow: hidden; }
+  /* name takes the slack so the tag and × sit flush right in every chip */
+  .chip > span:first-child { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .chip:hover { border-color: var(--accent); }
+  .chip .tag { color: var(--dim); font-size: 10px; text-transform: uppercase; }
+  .chip .del { color: var(--dim); }
+  .chip .del:hover { color: var(--dead); }
+  .chip .del:hover { color: var(--dead); }
+  /* ---- transfer tab ---- */
+  .xfer-tab { border-style: dashed; }
+  .xfer-tab.active { border-style: solid; }
+  .xfer-tab .glyph { color: var(--host, var(--accent)); font-weight: 600; }
+  .pane.xfer { padding: 0; display: none; flex-direction: column; }
+  .pane.xfer.active { display: flex; }
+  .xfer-bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+              border-bottom: 1px solid var(--edge); background: var(--panel); }
+  .xfer-bar .path { flex: 1; font-family: Cascadia Mono, Consolas, monospace; }
+  /* Two panes, remote on the left and this machine on the right, the way
+     every other file-transfer program has arranged it for thirty years. */
+  .xfer-split { flex: 1; display: flex; min-height: 0; }
+  .xfer-side { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .xfer-side.remote { border-right: 1px solid var(--edge); }
+  .xfer-side .hd { display: flex; align-items: center; gap: 7px;
+                   padding: 5px 10px; font-size: 11px; letter-spacing: .08em;
+                   text-transform: uppercase; color: var(--dim);
+                   background: #232833;
+                   border-bottom: 1px solid var(--edge); }
+  .xfer-side .hd b { color: var(--host, var(--accent)); font-size: 12px;
+                     letter-spacing: 0; text-transform: none; }
+  .xfer-side .xfer-bar { border-bottom: 1px solid var(--edge); }
+  .xfer-list { flex: 1; overflow: auto; }
+  .xfer-list table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .xfer-list td { padding: 5px 10px; border-bottom: 1px solid var(--edge);
+                  white-space: nowrap; }
+  .xfer-list tr:hover td { background: #232833; }
+  .xfer-list tr.sel td { background: #2d3546; }
+  .xfer-list tr.sel .nm { color: var(--accent); }
+  /* max-width:0 with width:100% is the trick that makes this cell absorb the
+     slack and ellipsise, instead of a long name widening the table and pushing
+     size, date and the download arrow off the right edge. */
+  .xfer-list .nm { width: 100%; max-width: 0; overflow: hidden;
+                   text-overflow: ellipsis; cursor: pointer; }
+  .xfer-list .nm:hover { color: var(--accent); }
+  .xfer-list .sz, .xfer-list .mt { color: var(--dim); text-align: right;
+                                   font-variant-numeric: tabular-nums; }
+  .xfer-list .ic { width: 22px; text-align: center; color: var(--dim); }
+  .xfer-list .dl, .xfer-list .mv, .xfer-list .rm {
+      color: var(--dim); cursor: pointer; padding: 0 4px; }
+  .xfer-list .dl:hover, .xfer-list .mv:hover { color: var(--accent); }
+  .xfer-list .rm:hover { color: var(--dead); }
+  /* Row actions stay dim until the row is under the cursor, so a listing
+     reads as a listing rather than a wall of buttons. */
+  .xfer-list .cp { cursor: pointer; padding: 0 5px; color: var(--accent); }
+  .xfer-list .cp:hover { color: var(--fg); }
+  .xfer-list .act-dl, .xfer-list .act-mv, .xfer-list .act-rm,
+  .xfer-list .act-cp { opacity: 0; }
+  .xfer-list tr:hover .act-dl, .xfer-list tr:hover .act-mv,
+  .xfer-list tr:hover .act-rm, .xfer-list tr:hover .act-cp { opacity: 1; }
+  .xfer-foot { padding: 6px 10px; border-top: 1px solid var(--edge);
+               color: var(--dim); font-size: 12px; min-height: 27px;
+               background: var(--panel); }
+  .xfer-foot .bar { display: inline-block; height: 6px; width: 140px;
+                    background: #232833; border-radius: 3px; overflow: hidden;
+                    vertical-align: middle; margin: 0 8px; }
+  .xfer-foot .bar i { display: block; height: 100%; background: var(--accent); }
+
+  /* ---- settings screen ---- */
+  /* A full screen rather than a sidebar strip: settings are read and changed
+     deliberately, not while watching a terminal, and this has room to grow.
+     Adding a group is one nav button plus one <section>. */
+  #settings { position: fixed; inset: 0; z-index: 40; display: none;
+              flex-direction: column; background: var(--bg); }
+  #settings.on { display: flex; }
+  .set-head { display: flex; align-items: center; gap: 12px;
+              padding: 13px 18px; border-bottom: 1px solid var(--edge);
+              background: var(--panel); }
+  .set-head h2 { margin: 0; font-size: 15px; font-weight: 600; flex: 1; }
+  /* This screen covers everything, so the way out has to be obvious --
+     the default icon-btn is too faint to be the only exit. */
+  #set-close { font-size: 19px; line-height: 1; padding: 1px 10px 3px;
+               color: var(--fg); border-color: var(--edge); }
+  #set-close:hover { border-color: var(--accent); background: #232833; }
+  .set-head .esc { color: var(--dim); font-size: 11px; }
+  /* This screen covers the footer status bar, so say() mirrors here --
+     otherwise "forgot web-01" and "saved ..." land somewhere unseen. */
+  #set-status { color: var(--live); font-size: 12px; }
+  /* Shows the chosen palette on its own terms, since the real terminal is
+     behind this screen while you are picking. */
+  #term-preview { border: 1px solid var(--edge); border-radius: 6px;
+                  padding: 12px 14px; margin-bottom: 18px; line-height: 1.5;
+                  white-space: nowrap; overflow-x: auto; }
+  /* Phosphor bloom. currentColor keeps the halo the same hue as the glyph, so
+     it follows the palette instead of being hard-coded green. Swatches opt out
+     -- a glowing colour chip is just a blurry colour chip. */
+  .term-glow .xterm-rows, #term-preview.glow { text-shadow: 0 0 4px currentColor; }
+  #term-preview.glow .sw { text-shadow: none; }
+  .set-body { flex: 1; display: flex; min-height: 0; }
+  .set-nav { width: 190px; flex: none; padding: 12px 0;
+             border-right: 1px solid var(--edge); background: var(--panel);
+             overflow-y: auto; }
+  .set-tab { display: block; width: 100%; text-align: left; font-size: 13px;
+             padding: 8px 18px; background: transparent; border: 0;
+             border-left: 2px solid transparent; color: var(--dim);
+             border-radius: 0; cursor: pointer; }
+  .set-tab:hover { color: var(--fg); background: #232833; }
+  .set-tab.on { color: var(--fg); background: #232833;
+                border-left-color: var(--accent); }
+  .set-panes { flex: 1; overflow-y: auto; padding: 22px 26px; }
+  .set-pane { max-width: 620px; }
+  .set-pane h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; }
+  .set-pane .sub { margin: 0 0 18px; color: var(--dim); font-size: 12px; }
+  .set-pane label { display: block; color: var(--dim); margin: 0 0 12px; }
+  .set-pane label input, .set-pane label textarea,
+  .set-pane label select { width: 100%; margin-top: 3px; }
+  /* the remember-password tickbox is inline, not a full-width field */
+  .set-pane label input[type=checkbox] { width: auto; margin: 0 6px 0 0; }
+  .set-pane .row { max-width: 320px; }
+
+  /* ---- unlock gate ---- */
+  /* Covers everything until the vault is open, so nothing behind it can be
+     clicked while the API would only answer 423. */
+  #lock { position: fixed; inset: 0; z-index: 50; display: none;
+          align-items: center; justify-content: center; background: var(--bg); }
+  #lock.on { display: flex; }
+  #lock form { width: 340px; padding: 22px 24px; background: var(--panel);
+               border: 1px solid var(--edge); border-radius: 10px; }
+  #lock h2 { margin: 0 0 4px; font-size: 15px; font-weight: 600; }
+  #lock p { margin: 0 0 16px; color: var(--dim); font-size: 12px; line-height: 1.5; }
+  #lock label { display: block; margin-bottom: 10px; font-size: 12px; color: var(--dim); }
+  #lock input { width: 100%; margin-top: 4px; }
+  #lock button { width: 100%; margin-top: 6px; }
+  #lock .err { color: var(--dead); font-size: 12px; min-height: 17px; margin-top: 9px; }
+</style>
+</head>
+<body>
+
+<div id="settings">
+  <div class="set-head">
+    <h2>Settings</h2>
+    <span id="set-status"></span>
+    <span class="esc">Esc to close</span>
+    <button class="icon-btn" id="set-close" title="close (Esc)">&times;</button>
+  </div>
+  <div class="set-body">
+    <nav class="set-nav">
+      <button class="set-tab on" data-pane="set-general">General</button>
+      <button class="set-tab" data-pane="set-terminal">Terminal</button>
+      <button class="set-tab" data-pane="set-hosts">Hosts</button>
+      <button class="set-tab" data-pane="set-library">Command library</button>
+    </nav>
+    <div class="set-panes">
+
+      <section class="set-pane" id="set-general">
+        <h3>General</h3>
+        <p class="sub">Applies to sessions opened from now on; sessions already
+          running keep what they started with.</p>
+        <label>default key
+          <input id="cfg-key" title="used by every host that does not name its own key">
+        </label>
+        <label>max inline transfer (bytes)
+          <input id="cfg-max" title="ceiling for transfers held whole in memory: the in-band upload and download, and a transfer tab's get and put. Both directions are checked. pull and push stream through disk and ignore this.">
+        </label>
+        <button id="cfg-save">save settings</button>
+        <p class="hint" id="cfg-note"></p>
+      </section>
+
+      <section class="set-pane" id="set-terminal" hidden>
+        <h3>Terminal</h3>
+        <p class="sub">Applies to the terminal panes only &mdash; the sidebar and
+          this screen keep their own palette. Changes land on every open tab
+          straight away; nothing reconnects.</p>
+
+        <div id="term-preview"></div>
+
+        <label>theme <select id="t-theme"></select></label>
+        <label>font <select id="t-font"></select></label>
+        <div class="row">
+          <label>size (px) <input id="t-size" type="number" min="8" max="28" step="1"></label>
+          <label>cursor
+            <select id="t-cursor">
+              <option value="block">block</option>
+              <option value="bar">bar</option>
+              <option value="underline">underline</option>
+            </select>
+          </label>
+        </div>
+        <label><input type="checkbox" id="t-blink"> blink the cursor</label>
+        <p class="hint"><code>Ctrl</code> <code>+</code> / <code>-</code> still
+          changes size in a tab, and lands back here.</p>
+      </section>
+
+      <section class="set-pane" id="set-hosts" hidden>
+        <h3>Hosts</h3>
+        <p class="sub">Click a host to edit it, <code>&times;</code> to forget it.
+          Saved hosts appear as chips under <b>Connect</b>, where one click opens
+          a session. Saving an existing name overwrites it.</p>
+        <div class="chips" id="managechips"></div>
+        <label>name <input id="h-name"></label>
+        <label>target <input id="h-target" placeholder="user@host"></label>
+        <div class="row">
+          <label>auth
+            <select id="h-auth">
+              <option value="key">key</option>
+              <option value="password">password</option>
+              <option value="cert">certificate</option>
+            </select>
+          </label>
+          <label>port <input id="h-port" placeholder="22"></label>
+        </div>
+        <label>key / certificate <input id="h-key"></label>
+        <label>via (jump host) <input id="h-jump"></label>
+        <label>terminal theme <select id="h-theme"></select>
+          <span class="hint" style="display:block">Pins this host to a palette so
+            its tab is recognisable before you read the prompt. Applies straight
+            away; press <b>save</b> to keep it on the host, where it follows you
+            to your other machine.</span>
+        </label>
+        <label class="h-pass" hidden>password <input id="h-pass" type="password"></label>
+        <label class="h-pass" hidden><input type="checkbox" id="h-remember" style="width:auto"> remember password</label>
+        <div class="row">
+          <button id="h-save">save</button>
+          <button id="h-clear" class="ghost">clear</button>
+        </div>
+      </section>
+
+      <section class="set-pane" id="set-library" hidden>
+        <h3>Command library</h3>
+        <p class="sub">Saved commands, one click to run in the active tab.
+          Saving an existing name overwrites it.
+          <code>{{name}}</code> becomes a prompt when the command runs.</p>
+        <div class="chips" id="snipedit"></div>
+        <label>name <input id="sn-name" placeholder="APT Upgrade"></label>
+        <label>command
+          <textarea id="sn-cmd" rows="4" style="background:#10131a;color:var(--fg);
+                    border:1px solid var(--edge);border-radius:6px;padding:6px 8px;
+                    font-family:Cascadia Mono,Consolas,monospace"></textarea></label>
+        <div class="row">
+          <button id="sn-save">save</button>
+          <button id="sn-clear" class="ghost">clear</button>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div id="lock">
+  <form id="lock-form" autocomplete="off">
+    <h2 id="lock-title">Unlock</h2>
+    <p id="lock-why">The master password opens your saved SSH passwords and
+       gates the console. Nothing is reachable until it is given.</p>
+    <label>master password
+      <input id="lock-pass" type="password" autocomplete="current-password" autofocus>
+    </label>
+    <label id="lock-confirm-row" hidden>confirm
+      <input id="lock-confirm" type="password" autocomplete="new-password">
+    </label>
+    <button id="lock-go" type="submit">unlock</button>
+    <div class="err" id="lock-err"></div>
+  </form>
+</div>
+
+<aside id="side">
+  <div class="side-head">
+    <h1>CypherGate</h1>
+    <button class="icon-btn" id="collapse" title="collapse sidebar">&#9776;</button>
+  </div>
+
+  <div class="sections">
+    <button class="sec-btn" data-sec="sec-connect"><span class="ico">&#9889;</span><span class="lbl">Connect</span></button>
+    <div class="sec-body" id="sec-connect">
+      <div class="chips" id="hostchips"></div>
+
+      <button id="c-toggle" class="disclose" type="button"
+              aria-expanded="false" aria-controls="c-adhoc">
+        <span class="chev">&#9654;</span>One-time connect
+      </button>
+
+      <div id="c-adhoc" hidden>
+        <p class="hint" style="margin: 0 0 9px">A host you have not saved.
+          Nothing typed here is written to <code>hosts.json</code>.</p>
+        <label>name <input id="c-name" placeholder="web-01"></label>
+        <label>target <input id="c-target" placeholder="user@host"></label>
+        <label>auth
+          <select id="c-auth">
+            <option value="key">key</option>
+            <option value="password">password</option>
+            <option value="cert">certificate</option>
+          </select>
+        </label>
+        <label class="opt-key">key file <input id="c-key"></label>
+        <label class="opt-cert" hidden>certificate <input id="c-cert"></label>
+        <label class="opt-pass" hidden>password <input id="c-pass" type="password"></label>
+        <label>via (jump host) <input id="c-jump" placeholder="optional"></label>
+        <button id="c-go">connect</button>
+      </div>
+    </div>
+
+    <button class="sec-btn" data-sec="sec-files"><span class="ico">&#8645;</span><span class="lbl">Files</span></button>
+    <div class="sec-body" id="sec-files">
+      <div class="chips" id="xferchips"></div>
+      <p class="hint" style="margin-top:0">Opens a <b>&#8645; transfer tab</b>: its own
+         connection, so one key touch — then browse and move as much as you like
+         until you close it. The shell stays usable meanwhile.</p>
+
+      <button id="f-toggle" class="disclose" type="button"
+              aria-expanded="false" aria-controls="f-inband">
+        <span class="chev">&#9654;</span>In-Session Transfer
+      </button>
+
+      <div id="f-inband" hidden>
+        <label>get remote path <input id="f-get" placeholder="/etc/caddy/Caddyfile"></label>
+        <button id="f-download">download</button>
+        <hr style="border:0;border-top:1px solid var(--edge);margin:12px 0">
+        <label>put into dir <input id="f-dir" placeholder="(current directory)"></label>
+        <button id="f-pick">choose file&hellip;</button>
+        <input type="file" id="f-file" hidden>
+        <p class="hint">Or drag a file onto the terminal. Transfers ride the open
+           session, so they cost no extra key touch.</p>
+      </div>
+
+      <hr style="border:0;border-top:1px solid var(--edge);margin:12px 0">
+      <button id="f-export">export session log</button>
+      <p class="hint">Saves this tab's whole transcript as plain text. The working log is deleted when the session closes, so export before you disconnect.</p>
+    </div>
+
+    <button class="sec-btn" data-sec="sec-cmds"><span class="ico">&#9776;</span><span class="lbl">Commands</span></button>
+    <div class="sec-body" id="sec-cmds">
+      <div class="chips" id="snipchips"></div>
+      <p class="hint">Click to run in the active tab. Shift-click types it at the
+         prompt without running. Edit the library under Settings.</p>
+    </div>
+
+
+    <button class="sec-btn" id="open-settings"><span class="ico">&#9881;</span><span class="lbl">Settings</span></button>
+  </div>
+</aside>
+
+<main>
+  <div class="tabs" id="tabs"></div>
+  <div id="panes">
+    <div id="find">
+      <input id="s-text" placeholder="find in scrollback" size="24">
+      <button id="s-prev" class="ghost">&uarr;</button>
+      <button id="s-next" class="ghost">&darr;</button>
+      <button id="s-close" class="ghost">&times;</button>
+    </div>
+    <div id="empty">
+      no sessions<br>
+      <span>open <code>Connect</code> &mdash; one key touch per tab, none per command</span>
+    </div>
+  </div>
+  <footer>
+    <span id="status">ready</span>
+    <span>Alt+1..9 tabs &middot; Ctrl+Shift+F find &middot; Ctrl +/- font &middot;
+          select copies, right-click pastes</span>
+  </footer>
+</main>
+
+<script>
+const TOKEN = '__TOKEN__';
+const sessions = new Map();
+let active = null;
+
+const $ = id => document.getElementById(id);
+const say = m => {
+  $('status').textContent = m;
+  // The settings screen sits over the footer, so mirror the message into its
+  // header while it is open -- host and snippet edits report through here.
+  const mirror = $('set-status');
+  if (mirror) mirror.textContent = m;
+};
+const api = (path, opts = {}) => fetch(path, {
+  ...opts, headers: { 'X-Token': TOKEN, ...(opts.headers || {}) }
+}).then(r => r.json());
+
+const store = {
+  get(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+};
+
+/* base64 helpers that survive large files (spread would blow the stack) */
+function bytesToB64(bytes) {
+  let s = '', CH = 0x8000;
+  for (let i = 0; i < bytes.length; i += CH)
+    s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+  return btoa(s);
+}
+function b64ToBytes(b64) {
+  const bin = atob(b64), out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/* ---------- terminal styling ---------- */
+
+// Only the terminal is themed. The surrounding chrome keeps its own palette on
+// purpose: the sidebar is the app, the pane is the remote host, and a light
+// terminal inside a dark app should stay a deliberate choice rather than drag
+// the whole interface with it.
+//
+// Each entry carries the full 16-colour ANSI set. Setting only background and
+// foreground -- which is what this used to do -- leaves `ls`, `systemctl` and
+// every prompt drawing from xterm's stock palette, so the theme never really
+// took effect below the background.
+const TERM_THEMES = {
+  console: { label: 'Console (default)', theme: {
+    background: '#14161a', foreground: '#d7dce5', cursor: '#6ea8fe',
+    selectionBackground: '#31456b',
+    black: '#14161a', red: '#f87171', green: '#4ade80', yellow: '#fbbf24',
+    blue: '#6ea8fe', magenta: '#c084fc', cyan: '#22d3ee', white: '#d7dce5',
+    brightBlack: '#4b5563', brightRed: '#fca5a5', brightGreen: '#86efac',
+    brightYellow: '#fde047', brightBlue: '#93c5fd', brightMagenta: '#d8b4fe',
+    brightCyan: '#67e8f9', brightWhite: '#ffffff' } },
+
+  solarizedDark: { label: 'Solarized Dark', theme: {
+    background: '#002b36', foreground: '#839496', cursor: '#93a1a1',
+    selectionBackground: '#073642',
+    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+    blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+    brightBlack: '#586e75', brightRed: '#cb4b16', brightGreen: '#93a1a1',
+    brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4',
+    brightCyan: '#93a1a1', brightWhite: '#fdf6e3' } },
+
+  solarizedLight: { label: 'Solarized Light', theme: {
+    background: '#fdf6e3', foreground: '#657b83', cursor: '#586e75',
+    selectionBackground: '#eee8d5',
+    black: '#073642', red: '#dc322f', green: '#859900', yellow: '#b58900',
+    blue: '#268bd2', magenta: '#d33682', cyan: '#2aa198', white: '#eee8d5',
+    brightBlack: '#93a1a1', brightRed: '#cb4b16', brightGreen: '#586e75',
+    brightYellow: '#657b83', brightBlue: '#839496', brightMagenta: '#6c71c4',
+    brightCyan: '#586e75', brightWhite: '#fdf6e3' } },
+
+  gruvbox: { label: 'Gruvbox Dark', theme: {
+    background: '#282828', foreground: '#ebdbb2', cursor: '#ebdbb2',
+    selectionBackground: '#504945',
+    black: '#282828', red: '#cc241d', green: '#98971a', yellow: '#d79921',
+    blue: '#458588', magenta: '#b16286', cyan: '#689d6a', white: '#a89984',
+    brightBlack: '#928374', brightRed: '#fb4934', brightGreen: '#b8bb26',
+    brightYellow: '#fabd2f', brightBlue: '#83a598', brightMagenta: '#d3869b',
+    brightCyan: '#8ec07c', brightWhite: '#ebdbb2' } },
+
+  nord: { label: 'Nord', theme: {
+    background: '#2e3440', foreground: '#d8dee9', cursor: '#d8dee9',
+    selectionBackground: '#434c5e',
+    black: '#3b4252', red: '#bf616a', green: '#a3be8c', yellow: '#ebcb8b',
+    blue: '#81a1c1', magenta: '#b48ead', cyan: '#88c0d0', white: '#e5e9f0',
+    brightBlack: '#4c566a', brightRed: '#bf616a', brightGreen: '#a3be8c',
+    brightYellow: '#ebcb8b', brightBlue: '#81a1c1', brightMagenta: '#b48ead',
+    brightCyan: '#8fbcbb', brightWhite: '#eceff4' } },
+
+  // Monochrome on purpose. A phosphor tube had one colour and rendered every
+  // ANSI attribute as an intensity, so these 16 slots are steps of green
+  // rather than hues -- which means the ordering has to carry the meaning the
+  // hue used to. Red sits *above* the base foreground so a failure still jumps
+  // out, yellow just above it for warnings, and blue/cyan stay legible because
+  // `ls` paints directories with them. Only black and brightBlack go dim.
+  // The honest cost: red, yellow and blue are no longer told apart by colour,
+  // only by brightness.
+  retro: { label: 'Retro (green phosphor)', glow: true, theme: {
+    background: '#000000', foreground: '#33ff33', cursor: '#4dff4d',
+    selectionBackground: '#1f4d1f',
+    black: '#0a140a', red: '#7dff7d', green: '#33ff33', yellow: '#5cff5c',
+    blue: '#47e647', magenta: '#40cc40', cyan: '#52f052', white: '#ccffcc',
+    brightBlack: '#1f4d1f', brightRed: '#b3ffb3', brightGreen: '#80ff80',
+    brightYellow: '#99ff99', brightBlue: '#8cff8c', brightMagenta: '#94ff94',
+    brightCyan: '#a6ffa6', brightWhite: '#e6ffe6' } },
+
+  // The other phosphor. Same intensity ladder as the green one, rung for rung,
+  // so the two behave identically and only the hue changes -- red still sits
+  // above the base foreground, only black and brightBlack go dim.
+  retroAmber: { label: 'Retro (amber phosphor)', glow: true, theme: {
+    background: '#000000', foreground: '#ffb000', cursor: '#ffc233',
+    selectionBackground: '#4d3300',
+    black: '#140d00', red: '#ffd27d', green: '#ffb000', yellow: '#ffc25c',
+    blue: '#e69e47', magenta: '#cc8c40', cyan: '#f0a852', white: '#ffe6cc',
+    brightBlack: '#4d3300', brightRed: '#ffe3b3', brightGreen: '#ffc980',
+    brightYellow: '#ffd699', brightBlue: '#ffce8c', brightMagenta: '#ffd394',
+    brightCyan: '#ffdba6', brightWhite: '#fff2e6' } },
+
+  dracula: { label: 'Dracula', theme: {
+    background: '#282a36', foreground: '#f8f8f2', cursor: '#f8f8f2',
+    selectionBackground: '#44475a',
+    black: '#21222c', red: '#ff5555', green: '#50fa7b', yellow: '#f1fa8c',
+    blue: '#bd93f9', magenta: '#ff79c6', cyan: '#8be9fd', white: '#f8f8f2',
+    brightBlack: '#6272a4', brightRed: '#ff6e6e', brightGreen: '#69ff94',
+    brightYellow: '#ffffa5', brightBlue: '#d6acff', brightMagenta: '#ff92df',
+    brightCyan: '#a4ffff', brightWhite: '#ffffff' } },
+};
+
+const TERM_FONTS = [
+  'Cascadia Mono, Consolas, monospace',
+  'Consolas, monospace',
+  'Cascadia Code, Cascadia Mono, monospace',
+  'Lucida Console, monospace',
+  'Courier New, monospace',
+];
+
+// A host may pin its own theme, so `prod-db` is recognisable as `prod-db` before
+// you read the prompt. That is a property of the host rather than of the
+// screen, so it lives in hosts.json and follows you between machines -- unlike
+// font size, where a 4K desktop and a laptop genuinely want different answers.
+//
+// The localStorage copy is a fallback, not the record. A server older than the
+// `theme` field silently drops it on save, so the pin still works locally in
+// the window before the next restart; hosts.json wins as soon as it has one.
+const HOST_THEMES = new Map();
+function hostThemeKey(name) { return 'hosttheme:' + name; }
+
+function termThemeEntry(session) {
+  const pinned = session &&
+        (HOST_THEMES.get(session) || store.get(hostThemeKey(session), ''));
+  return TERM_THEMES[pinned] ||
+         TERM_THEMES[store.get('termtheme', 'console')] ||
+         TERM_THEMES.console;
+}
+
+function termTheme(session) { return termThemeEntry(session).theme; }
+
+// xterm has no "glow" option, and a phosphor tube without the bloom just looks
+// like green text -- so the CRT halo is a CSS class on the terminal rows,
+// switched on only by themes that ask for it.
+// Glow follows whichever terminal you are looking at, since it is a page-level
+// class and only one pane is visible at a time.
+function applyGlow(session) {
+  document.body.classList.toggle('term-glow',
+    !!termThemeEntry(session === undefined ? active : session).glow);
+}
+
+function termOpts(session) {
+  return {
+    fontFamily: store.get('termfont', TERM_FONTS[0]),
+    fontSize: parseInt(store.get('font', '13'), 10) || 13,
+    cursorStyle: store.get('termcursor', 'block'),
+    cursorBlink: store.get('termblink', '1') === '1',
+    theme: termTheme(session),
+  };
+}
+
+// Live: every open tab restyles at once, no reconnect. Only the size-dependent
+// bits need a refit, and pushSize is a no-op when the grid did not change.
+function applyTermStyle() {
+  for (const [name, s] of sessions) {
+    if (!s.term) continue;             // transfer tabs have no terminal
+    const o = termOpts(name);          // per-tab: a pinned host keeps its own
+    Object.assign(s.term.options, o);
+    s.font = o.fontSize;
+    s.fit.fit();
+    pushSize(name);
+  }
+  applyGlow();
+  paintTermPreview();
+}
+applyGlow();          // the remembered theme may want it before any tab exists
+
+function paintTermPreview() {
+  const el = $('term-preview');
+  if (!el) return;
+  const o = termOpts(), t = o.theme;
+  el.style.background = t.background;
+  el.style.color = t.foreground;
+  el.style.fontFamily = o.fontFamily;
+  el.style.fontSize = o.fontSize + 'px';
+  el.classList.toggle('glow', !!termThemeEntry().glow);
+  const swatch = keys => keys.map(k =>
+    `<span class="sw" style="display:inline-block;width:20px;height:11px;background:${t[k]}"></span>`).join('');
+  el.innerHTML =
+    `<div><span style="color:${t.green}">deploy@web-01</span>` +
+    `<span style="color:${t.brightBlack}">:</span>` +
+    `<span style="color:${t.blue}">~</span>$ systemctl status caddy</div>` +
+    `<div><span style="color:${t.green}">&#9679;</span> caddy.service ` +
+    `<span style="color:${t.brightBlack}">- Caddy web server</span></div>` +
+    `<div>   Active: <span style="color:${t.green}">active (running)</span> ` +
+    `since Mon; <span style="color:${t.cyan}">3 weeks ago</span></div>` +
+    `<div>   <span style="color:${t.red}">error</span> ` +
+    `<span style="color:${t.yellow}">warning</span> ` +
+    `<span style="color:${t.magenta}">notice</span> ` +
+    `<span style="background:${t.selectionBackground}">selected text</span>` +
+    `<span style="color:${t.cursor}">&#9608;</span></div>` +
+    `<div style="margin-top:9px;line-height:1">` +
+    swatch(['black','red','green','yellow','blue','magenta','cyan','white']) + '<br>' +
+    swatch(['brightBlack','brightRed','brightGreen','brightYellow',
+            'brightBlue','brightMagenta','brightCyan','brightWhite']) + '</div>';
+}
+
+/* ---------- sidebar ---------- */
+
+function openSection(id) {
+  for (const b of document.querySelectorAll('.sec-body')) b.classList.toggle('open', b.id === id);
+  for (const b of document.querySelectorAll('.sec-btn')) b.classList.toggle('on', b.dataset.sec === id);
+  store.set('section', id || '');
+}
+
+for (const btn of document.querySelectorAll('.sec-btn')) {
+  if (!btn.dataset.sec) continue;          // Settings opens a screen, not a strip
+  btn.onclick = () => {
+    const id = btn.dataset.sec;
+    const wasOpen = $(id).classList.contains('open');
+    if ($('side').classList.contains('collapsed')) {
+      setCollapsed(false);
+      openSection(id);
+    } else {
+      openSection(wasOpen ? null : id);
+    }
+    if (id === 'sec-connect') refreshHosts();
+    if (id === 'sec-cmds') refreshSnippets();
+    refit();
+  };
+}
+
+/* ---------- settings screen ---------- */
+
+function showSettings(on) {
+  $('settings').classList.toggle('on', on);
+  $('open-settings').classList.toggle('on', on);
+  if (on) {
+    refreshSnippets();
+    refreshHosts();
+    loadConfig();
+    buildTerminalPane();
+    buildHostThemePicker();
+    $('set-status').textContent = '';
+  } else if (active) {
+    { const a = sessions.get(active); if (a && a.term) a.term.focus(); }
+  }
+}
+
+// Populated once; the controls write straight to `store` and restyle live, so
+// there is no save button to forget to press.
+function buildTerminalPane() {
+  const theme = $('t-theme'), font = $('t-font');
+  if (!theme.options.length) {
+    for (const [key, v] of Object.entries(TERM_THEMES))
+      theme.add(new Option(v.label, key));
+    for (const f of TERM_FONTS)
+      font.add(new Option(f.split(',')[0], f));
+  }
+  theme.value = TERM_THEMES[store.get('termtheme', 'console')] ? store.get('termtheme', 'console') : 'console';
+  font.value = TERM_FONTS.includes(store.get('termfont', '')) ? store.get('termfont', '') : TERM_FONTS[0];
+  $('t-size').value = parseInt(store.get('font', '13'), 10) || 13;
+  $('t-cursor').value = store.get('termcursor', 'block');
+  $('t-blink').checked = store.get('termblink', '1') === '1';
+  paintTermPreview();
+}
+
+function wireTerminalPane() {
+  const commit = (key, el, prop = 'value') => el.addEventListener('change', () => {
+    let v = el[prop];
+    if (key === 'font') v = String(Math.min(28, Math.max(8, parseInt(v, 10) || 13)));
+    if (prop === 'checked') v = v ? '1' : '';
+    store.set(key, v);
+    if (key === 'font') $('t-size').value = v;
+    applyTermStyle();
+    say('terminal style updated');
+  });
+  commit('termtheme', $('t-theme'));
+  commit('termfont', $('t-font'));
+  commit('font', $('t-size'));
+  commit('termcursor', $('t-cursor'));
+  commit('termblink', $('t-blink'), 'checked');
+}
+wireTerminalPane();
+
+function openPane(id) {
+  for (const p of document.querySelectorAll('.set-pane')) p.hidden = p.id !== id;
+  for (const t of document.querySelectorAll('.set-tab'))
+    t.classList.toggle('on', t.dataset.pane === id);
+}
+
+for (const t of document.querySelectorAll('.set-tab'))
+  t.onclick = () => openPane(t.dataset.pane);
+
+$('open-settings').onclick = () => showSettings(!$('settings').classList.contains('on'));
+$('set-close').onclick = () => showSettings(false);
+
+function setCollapsed(on) {
+  $('side').classList.toggle('collapsed', on);
+  $('collapse').title = on ? 'expand sidebar' : 'collapse sidebar';
+  store.set('collapsed', on ? '1' : '0');
+  refit();
+}
+$('collapse').onclick = () => setCollapsed(!$('side').classList.contains('collapsed'));
+
+// The sidebar animates, so refit once it has settled as well as immediately.
+function refit() {
+  if (!active || !sessions.has(active)) return;
+  const s = sessions.get(active);
+  const go = () => { try { if (s.term) { s.fit.fit(); pushSize(active); } } catch (e) {} };
+  requestAnimationFrame(go);
+  setTimeout(go, 180);
+}
+
+/* ---------- terminal panes ---------- */
+
+function makePane(name) {
+  const pane = document.createElement('div');
+  // Must be visible before term.open(): xterm measures character size from the
+  // live DOM, and measuring a display:none node yields a bogus tiny grid.
+  pane.className = 'pane active';
+  for (const s of sessions.values()) s.pane.classList.remove('active');
+  $('panes').appendChild(pane);
+  $('empty').style.display = 'none';
+
+  // allowProposedApi: registerDecoration -- which draws the attribution bar
+  // -- is still proposed API in the bundled xterm and throws without it.
+  const term = new Terminal({ scrollback: 20000, allowProposedApi: true,
+                              ...termOpts(name) });
+  const fit = new FitAddon.FitAddon();
+  const search = new SearchAddon.SearchAddon();
+  term.loadAddon(fit);
+  term.loadAddon(search);
+  term.loadAddon(new WebLinksAddon.WebLinksAddon());
+  term.open(pane);
+  fit.fit();
+
+  // Attribution. The server brackets anything it ran on your behalf with an
+  // OSC 778; terminals ignore an OSC they do not know, so this is inert if
+  // the marker never arrives and nothing here is required for the session to
+  // work. The keyboard is never marked: you are the default.
+  let apiFrom = null;
+  term.parser.registerOscHandler(778, payload => {
+    const buf = term.buffer.active;
+    if (payload === '1') {
+      apiFrom = buf.baseY + buf.cursorY;
+    } else if (apiFrom !== null) {
+      // The cursor now sits on the prompt that followed, which is yours
+      // again -- so the run ends on the line above it.
+      markApi(term, apiFrom, buf.baseY + buf.cursorY - 1);
+      apiFrom = null;
+    }
+    return true;
+  });
+
+  new ResizeObserver(() => {
+    if (!pane.classList.contains('active')) return;
+    try { fit.fit(); pushSize(name); } catch (e) { /* not laid out yet */ }
+  }).observe(pane);
+
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+  });
+  pane.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    navigator.clipboard.readText().then(t => t && sendInput(name, t)).catch(() => {});
+  });
+
+  term.attachCustomKeyEventHandler(e => {
+    if (e.type !== 'keydown') return true;
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') { openFind(); return false; }
+    if (e.ctrlKey && (e.key === '=' || e.key === '+')) { bumpFont(name, +1); return false; }
+    if (e.ctrlKey && e.key === '-') { bumpFont(name, -1); return false; }
+    if (e.ctrlKey && e.key === '0') { setFont(name, 13); return false; }
+    if (e.ctrlKey && e.key === 'c' && term.hasSelection()) {
+      navigator.clipboard.writeText(term.getSelection());
+      say('copied'); return false;
+    }
+    return true;
+  });
+
+  term.onData(d => sendInput(name, d));
+
+  pane.addEventListener('dragover', e => { e.preventDefault(); pane.classList.add('drop'); });
+  pane.addEventListener('dragleave', () => pane.classList.remove('drop'));
+  pane.addEventListener('drop', e => {
+    e.preventDefault();
+    pane.classList.remove('drop');
+    const f = e.dataTransfer.files[0];
+    if (f) uploadFile(name, f);
+  });
+
+  return { term, fit, search, pane, lastSize: '', font: term.options.fontSize };
+}
+
+// Opened only once the session exists, so the stream never 404s.
+function attachStream(name, s) {
+  s.es = new EventSource(`/api/sessions/${name}/stream?token=${encodeURIComponent(TOKEN)}`);
+  s.es.onmessage = e => s.term.write(b64ToBytes(e.data));
+  // EventSource retries on its own, and the server resumes from the last
+  // event id rather than replaying the scrollback -- so a dropped socket
+  // costs nothing and must not be reported as a dead session. Offering the
+  // reconnect button for a blip is worse than useless: it closes the
+  // session and reopens it, which costs a key touch. Only a stream the
+  // browser has given up on is dead here; a session that really ended is
+  // caught by the four-second poll, which asks the server rather than
+  // guessing from a socket.
+  s.es.onerror = () => {
+    if (s.es.readyState === EventSource.CLOSED) markDead(name);
+  };
+}
+
+// One decoration per line, capped: a command that prints a hundred thousand
+// lines must not try to register a hundred thousand of them.
+const MAX_API_MARKS = 500;
+
+function markApi(term, from, to) {
+  const buf = term.buffer.active;
+  const cur = buf.baseY + buf.cursorY;
+  if (to < from) return;
+  if (to - from > MAX_API_MARKS) to = from + MAX_API_MARKS;
+  for (let line = from; line <= to; line++) {
+    try {
+      const marker = term.registerMarker(line - cur);
+      if (!marker) continue;
+      const dec = term.registerDecoration(
+        { marker, x: 0, width: term.cols, layer: 'bottom' });
+      if (dec) dec.onRender(el => el.classList.add('api-line'));
+    } catch (e) {
+      // Usually the line has scrolled out of the buffer, which is fine and
+      // common. But this catch once swallowed a missing allowProposedApi for
+      // every line of every run, so say something the first time.
+      if (!markApi.warned) { markApi.warned = true; console.warn('attribution:', e); }
+    }
+  }
+}
+
+function sendInput(name, data) {
+  const bytes = new TextEncoder().encode(data);
+  return api(`/api/sessions/${name}/input`, {
+    method: 'POST',
+    body: JSON.stringify({ data: bytesToB64(bytes), b64: true,
+                           source: 'keyboard' })
+  });
+}
+
+function bumpFont(name, delta) {
+  const s = sessions.get(name);
+  if (s) setFont(name, Math.min(28, Math.max(8, s.font + delta)));
+}
+function setFont(name, px) {
+  const s = sessions.get(name);
+  if (!s) return;
+  s.font = px;
+  s.term.options.fontSize = px;
+  store.set('font', String(px));
+  s.fit.fit();
+  pushSize(name);
+  say(`font ${px}px`);
+}
+
+function makeTab(name, target, kind, host) {
+  const tab = document.createElement('div');
+  // Hue still means the host -- a transfer tab for `prod-db` stays its host's
+  // colour, because writing a file to the wrong machine is worse than typing
+  // on it. Kind is carried by the glyph and the outline instead, so the two
+  // signals never compete.
+  tab.className = kind === 'transfer' ? 'tab xfer-tab' : 'tab';
+  if (kind === 'transfer') {
+    const t = termTheme(host);
+    tab.style.setProperty('--host', t.foreground);
+    tab.innerHTML = `<span class="glyph">&#8645;</span><span>${host}</span>` +
+                    `<span class="act close" title="close">&times;</span>`;
+  } else {
+    tab.innerHTML = `<span class="dot"></span><span>${name}</span>` +
+                    `<span class="act reconnect" title="reconnect" hidden>&#8635;</span>` +
+                    `<span class="act close" title="close">&times;</span>`;
+  }
+  tab.title = target || '';
+  tab.onclick = e => {
+    if (e.target.classList.contains('close')) return closeSession(name);
+    if (e.target.classList.contains('reconnect')) return reconnect(name);
+    show(name);
+  };
+  $('tabs').appendChild(tab);
+  return tab;
+}
+
+function show(name) {
+  active = name;
+  for (const [n, s] of sessions) {
+    s.pane.classList.toggle('active', n === name);
+    s.tab.classList.toggle('active', n === name);
+  }
+  const s = sessions.get(name);
+  if (s && s.term) { s.fit.fit(); s.term.focus(); pushSize(name); }
+  applyGlow(name);          // the halo belongs to the tab now in front
+  $('empty').style.display = sessions.size ? 'none' : 'grid';
+}
+
+// Debounced: the sidebar animation fires ResizeObserver every frame, and each
+// resize is a real command on the remote. Only the settled size is worth sending.
+const sizeTimers = new Map();
+function pushSize(name) {
+  clearTimeout(sizeTimers.get(name));
+  sizeTimers.set(name, setTimeout(() => {
+    const s = sessions.get(name);
+    if (!s) return;
+    const sig = `${s.term.rows}x${s.term.cols}`;
+    if (sig === s.lastSize) return;
+    s.lastSize = sig;
+    api(`/api/sessions/${name}/resize`, {
+      method: 'POST', body: JSON.stringify({ rows: s.term.rows, cols: s.term.cols })
+    });
+  }, 300));
+}
+
+function markDead(name) {
+  const s = sessions.get(name);
+  if (!s || s.kind === 'transfer') return;   // no dot, no reconnect button
+  s.tab.querySelector('.dot').classList.add('dead');
+  s.tab.querySelector('.reconnect').hidden = false;
+}
+
+/* ---------- transfer tabs ---------- */
+
+// A transfer tab is a peer of a shell tab, not a mode of one: its own sftp
+// connection, its own key touch, and it keeps working while the shell is busy.
+// It holds no terminal, so anything that assumes one has to check `kind`.
+
+const HUMAN = n => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB'
+                 : n >= 1e6 ? (n / 1e6).toFixed(1) + ' MB'
+                 : n >= 1e3 ? (n / 1e3).toFixed(1) + ' kB' : n + ' B';
+
+// One formatter for every row. toLocaleString() builds a new one each call,
+// which a directory of a few thousand entries pays for a few thousand times.
+const WHEN = new Intl.DateTimeFormat(undefined,
+  { dateStyle: 'short', timeStyle: 'medium' });
+
+function makeXferPane(name, host) {
+  const pane = document.createElement('div');
+  pane.className = 'pane xfer active';
+  for (const s of sessions.values()) s.pane.classList.remove('active');
+  pane.innerHTML =
+    `<div class="xfer-split">
+       <div class="xfer-side remote">
+         <div class="hd">remote <b>${esc(host)}</b></div>
+         <div class="xfer-bar">
+           <button class="up ghost" title="parent directory">&uarr;</button>
+           <input class="path" spellcheck="false">
+           <button class="go ghost" title="go">&rarr;</button>
+           <button class="mkdir ghost" title="new folder">new folder</button>
+           <button class="upload">upload&hellip;</button>
+           <input type="file" class="picker" multiple hidden>
+         </div>
+         <div class="xfer-list"></div>
+       </div>
+       <div class="xfer-side local">
+         <div class="hd">local <b class="machine">this machine</b></div>
+         <div class="xfer-bar">
+           <button class="up ghost" title="parent directory">&uarr;</button>
+           <input class="path" spellcheck="false">
+           <button class="go ghost" title="go">&rarr;</button>
+           <button class="mkdir ghost" title="new folder">new folder</button>
+           <button class="home ghost" title="home directory">home</button>
+         </div>
+         <div class="xfer-list"></div>
+       </div>
+     </div>
+     <div class="xfer-foot"></div>`;
+  $('panes').appendChild(pane);
+  $('empty').style.display = 'none';
+
+  const R = sel => pane.querySelector('.xfer-side.remote ' + sel);
+  const L = sel => pane.querySelector('.xfer-side.local ' + sel);
+
+  R('.up').onclick = () => {
+    const p = R('.path').value.replace(/\/+$/, '');
+    xferGo(name, p.slice(0, p.lastIndexOf('/')) || '/');
+  };
+  R('.go').onclick = () => xferGo(name, R('.path').value.trim());
+  R('.path').addEventListener('keydown', e => {
+    if (e.key === 'Enter') xferGo(name, R('.path').value.trim());
+  });
+  R('.mkdir').onclick = () => xferMkdir(name);
+  R('.upload').onclick = () => R('.picker').click();
+  R('.picker').onchange = e => {
+    xferUpload(name, [...e.target.files]);
+    e.target.value = '';
+  };
+
+  // The local side's parent comes from the server, because "one level up"
+  // from C:\ is a drive list, not a path, and the browser cannot know that.
+  const s0 = () => sessions.get(name) || {};
+  L('.up').onclick = () => { const p = s0().lparent; if (p) localList(name, p); };
+  L('.go').onclick = () => localList(name, L('.path').value.trim());
+  L('.path').addEventListener('keydown', e => {
+    if (e.key === 'Enter') localList(name, L('.path').value.trim());
+  });
+  L('.mkdir').onclick = () => localMkdir(name);
+  L('.home').onclick = () => localList(name, s0().lhome || '');
+
+  // Dropping a file from the desktop still uploads to the remote directory
+  // being shown: a drop hands the page bytes, not a path, so it cannot go
+  // through the server-side copy.
+  pane.addEventListener('dragover', e => { e.preventDefault(); });
+  pane.addEventListener('drop', e => {
+    e.preventDefault();
+    if (e.dataTransfer.files.length) xferUpload(name, [...e.dataTransfer.files]);
+  });
+  return { pane, kind: 'transfer', host, cwd: '', lcwd: '', lsep: '\\',
+           lparent: null, lhome: '', lastSize: '' };
+}
+
+// A click on a file selects it and nothing more. Copying is the arrow and
+// only the arrow: a list you cannot click through without moving something
+// is a list you end up afraid of.
+function xferSelect(list, tr) {
+  for (const r of list.querySelectorAll('tr.sel')) r.classList.remove('sel');
+  tr.classList.add('sel');
+}
+
+// Both listings are the same table; only the direction arrow differs.
+function xferRows(entries, side) {
+  return entries.map(e => {
+    const icon = e.dir ? '&#128193;' : e.link ? '&#128279;' : '&#128196;';
+    const when = e.mtime ? WHEN.format(new Date(e.mtime * 1000)) : '';
+    const arrow = side === 'remote'
+      ? '<span class="cp" title="copy to this machine">&#9654;</span>'
+      : '<span class="cp" title="copy to the remote">&#9664;</span>';
+    const dl = side === 'remote' && !e.dir
+      ? '<span class="dl" title="download through the browser">&#8595;</span>' : '';
+    // A symlink's size is the link's own, not its target's -- same as ls -l.
+    return `<tr data-name="${esc(e.name)}" data-dir="${e.dir ? 1 : 0}">
+        <td class="ic">${icon}</td>
+        <td class="nm">${esc(e.name)}</td>
+        <td class="sz">${e.dir ? '' : HUMAN(e.size)}</td>
+        <td class="mt">${when}</td>
+        <td class="act-cp">${arrow}</td>
+        <td class="act-dl">${dl}</td>
+        <td class="act-mv"><span class="mv" title="rename">&#9998;</span></td>
+        <td class="act-rm"><span class="rm" title="delete">&times;</span></td></tr>`;
+  }).join('');
+}
+
+function xferFoot(name, html) {
+  const s = sessions.get(name);
+  if (s) s.pane.querySelector('.xfer-foot').innerHTML = html;
+}
+
+async function xferGo(name, path) {
+  const s = sessions.get(name);
+  if (!s) return;
+  const res = await api(`/api/sessions/${name}/cd`, {
+    method: 'POST', body: JSON.stringify({ path })
+  });
+  if (res.error) { xferFoot(name, `<span style="color:var(--dead)">${res.error}</span>`); return; }
+  s.cwd = res.cwd;
+  xferList(name);
+}
+
+/* ---------- the two halves of the transfer view ----------
+   Remote and local are the same pane twice: the same table, the same click
+   targets, the same selection. They were written out twice and had already
+   drifted -- the remote half interpolated a server error message straight
+   into HTML while the local half escaped it, which is the kind of thing a
+   copy grows on its own. What actually differs between them is data, so it
+   is data here, and there is one renderer.
+
+   The local half is served by the server rather than the browser: a page
+   only ever sees files a picker or a drop hands it, so it cannot list a
+   directory and certainly cannot write one. The server is on this machine
+   already. */
+
+const XFER_SIDES = {
+  remote: {
+    sel: '.xfer-side.remote',
+    fetch: name => api(`/api/sessions/${name}/ls`, {
+      method: 'POST', body: JSON.stringify({})
+    }),
+    save: (s, res) => { s.cwd = res.cwd; },
+    open: (name, s, nm) => xferGo(name, s.cwd.replace(/\/$/, '') + '/' + nm),
+    rm: xferRemove, mv: xferRename, dl: xferDownload, cp: xferPull,
+    foot: res => `${res.entries.length} items in ${esc(res.cwd)}`
+  },
+  local: {
+    sel: '.xfer-side.local',
+    fetch: (name, s, path) => api('/api/local/ls', {
+      method: 'POST',
+      body: JSON.stringify({ path: path === undefined ? s.lcwd : path })
+    }),
+    save: (s, res, side) => {
+      s.lcwd = res.cwd; s.lsep = res.sep;
+      s.lparent = res.parent; s.lhome = res.home;
+      side.querySelector('.machine').textContent = res.machine || 'this machine';
+    },
+    open: (name, s, nm) => localList(name, localJoin(s, nm)),
+    rm: localRemove, mv: localRename, dl: null, cp: xferPush,
+    foot: null
+  }
+};
+
+async function listPane(which, name, path) {
+  const s = sessions.get(name);
+  if (!s) return;
+  const cfg = XFER_SIDES[which];
+  const res = await cfg.fetch(name, s, path);
+  if (res.error) {
+    xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+    return;
+  }
+  const side = s.pane.querySelector(cfg.sel);
+  cfg.save(s, res, side);
+  side.querySelector('.path').value = res.cwd;
+  const list = side.querySelector('.xfer-list');
+  list.innerHTML = `<table>${xferRows(res.entries, which)}</table>`;
+  list.onclick = e => {
+    const tr = e.target.closest('tr');
+    if (!tr) return;
+    const nm = tr.dataset.name;
+    const isDir = tr.dataset.dir === '1';
+    const hit = e.target.classList;
+    if (hit.contains('rm')) return cfg.rm(name, nm, isDir);
+    if (hit.contains('mv')) return cfg.mv(name, nm);
+    if (hit.contains('dl') && cfg.dl) return cfg.dl(name, nm);
+    if (hit.contains('cp')) return cfg.cp(name, nm, isDir);
+    if (isDir) return cfg.open(name, s, nm);
+    xferSelect(list, tr);
+  };
+  if (cfg.foot) xferFoot(name, cfg.foot(res));
+}
+
+// Kept as declarations, not arrows: both are called from adoptSession and
+// the pane builders, which sit above this point in the file.
+function xferList(name) { return listPane('remote', name); }
+function localList(name, path) { return listPane('local', name, path); }
+
+const localJoin = (s, nm) => s.lcwd.replace(/[\\/]+$/, '') + s.lsep + nm;
+
+async function localMkdir(name) {
+  const s = sessions.get(name);
+  const nm = prompt('new folder in ' + s.lcwd);
+  if (!nm) return;
+  const res = await api('/api/local/mkdir', {
+    method: 'POST', body: JSON.stringify({ path: localJoin(s, nm) })
+  });
+  if (res.error) return xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+  localList(name);
+}
+
+async function localRename(name, nm) {
+  const s = sessions.get(name);
+  const to = prompt('rename ' + nm + ' to', nm);
+  if (!to || to === nm) return;
+  const res = await api('/api/local/mv', {
+    method: 'POST',
+    body: JSON.stringify({ from: localJoin(s, nm), to: localJoin(s, to) })
+  });
+  if (res.error) return xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+  localList(name);
+}
+
+async function localRemove(name, nm, isDir) {
+  const s = sessions.get(name);
+  if (!confirm(`delete ${nm} on this machine?` +
+               (isDir ? '\n\nA directory must already be empty.' : ''))) return;
+  const res = await api('/api/local/rm', {
+    method: 'POST', body: JSON.stringify({ path: localJoin(s, nm) })
+  });
+  if (res.error) return xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+  localList(name);
+}
+
+/* ---------- copies, which never pass through this page ---------- */
+
+async function xferPull(name, nm, isDir) {
+  const s = sessions.get(name);
+  const stop = xferWatch(name, `${esc(nm)} &rarr; ${esc(s.lcwd)}`);
+  const res = await api(`/api/sessions/${name}/pull`, {
+    method: 'POST',
+    body: JSON.stringify({ remote: s.cwd.replace(/\/+$/, '') + '/' + nm,
+                           local: localJoin(s, nm),
+                           recursive: isDir, timeout: 3600 })
+  });
+  stop();
+  if (res.error) return xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+  await localList(name);
+  xferFoot(name, `copied ${res.files} file${res.files === 1 ? '' : 's'} to ${esc(res.local)}`);
+}
+
+async function xferPush(name, nm, isDir) {
+  const s = sessions.get(name);
+  const stop = xferWatch(name, `${esc(nm)} &rarr; ${esc(s.cwd)}`);
+  const res = await api(`/api/sessions/${name}/push`, {
+    method: 'POST',
+    body: JSON.stringify({ remote: s.cwd.replace(/\/+$/, '') + '/' + nm,
+                           local: localJoin(s, nm),
+                           recursive: isDir, timeout: 3600 })
+  });
+  stop();
+  if (res.error) return xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+  await xferList(name);
+  xferFoot(name, `copied ${res.files} file${res.files === 1 ? '' : 's'} to ${esc(res.remote)}`);
+}
+
+const esc = t => String(t).replace(/[&<>"]/g,
+  c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// The server reports bytes moved on info(); poll it while one is in flight so
+// a large file is not a frozen window.
+function xferWatch(name, label) {
+  let stop = false;
+  (async () => {
+    while (!stop) {
+      await new Promise(r => setTimeout(r, 400));
+      if (stop) break;
+      let list;
+      // One failed poll used to reject inside this un-awaited loop, killing
+      // the watcher: the transfer carried on and the progress line froze
+      // where it stood, which reads exactly like a hang. Skip the tick.
+      try { list = await api('/api/sessions'); } catch (e) { continue; }
+      if (!Array.isArray(list)) continue;
+      const me = list.find(x => x.name === name);
+      const b = me && me.busy, j = me && me.job;
+      if (!b && !j) continue;
+      // A tree copy resets `busy` per file, so the file count is the only
+      // thing that moves monotonically; show both when there are both.
+      const head = j && j.files_total > 1
+        ? `${label} &mdash; file ${j.files_done + 1} of ${j.files_total}`
+        : label;
+      if (!b) { xferFoot(name, head); continue; }
+      const pct = b.total ? Math.min(100, Math.round(b.done / b.total * 100)) : 0;
+      xferFoot(name, `${head} &mdash; ${HUMAN(b.done)}${b.total ? ' / ' + HUMAN(b.total) : ''}` +
+        `<span class="bar"><i style="width:${pct}%"></i></span>${pct}%`);
+    }
+  })();
+  return () => { stop = true; };
+}
+
+// Deleting on a remote host cannot be undone and there is no recursive delete,
+// so this asks first and names exactly what it is about to remove.
+async function xferRemove(name, filename, isDir) {
+  const what = isDir ? 'directory' : 'file';
+  if (!confirm(`Delete the ${what}\n\n    ${filename}\n\n`
+             + `on ${sessions.get(name).host}? This cannot be undone.`)) return;
+  const res = await api(`/api/sessions/${name}/rm`, {
+    method: 'POST', body: JSON.stringify({ path: filename })
+  });
+  if (res.error) {
+    xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+    return;
+  }
+  await xferList(name);
+  xferFoot(name, `deleted ${esc(filename)}`);
+}
+
+async function xferRename(name, filename) {
+  const to = prompt(`Rename\n\n    ${filename}\n\nto:`, filename);
+  if (!to || to === filename) return;
+  const res = await api(`/api/sessions/${name}/mv`, {
+    method: 'POST', body: JSON.stringify({ from: filename, to })
+  });
+  if (res.error) {
+    xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+    return;
+  }
+  await xferList(name);
+  xferFoot(name, `renamed to ${esc(to)}`);
+}
+
+async function xferMkdir(name) {
+  const nm = prompt('New folder name:', '');
+  if (!nm) return;
+  const res = await api(`/api/sessions/${name}/mkdir`, {
+    method: 'POST', body: JSON.stringify({ path: nm })
+  });
+  if (res.error) {
+    xferFoot(name, `<span style="color:var(--dead)">${esc(res.error)}</span>`);
+    return;
+  }
+  await xferList(name);
+  xferFoot(name, `created ${esc(nm)}`);
+}
+
+async function xferDownload(name, filename) {
+  const stop = xferWatch(name, `downloading ${esc(filename)}`);
+  xferFoot(name, `downloading ${esc(filename)} ...`);
+  const res = await api(`/api/sessions/${name}/get`, {
+    method: 'POST', body: JSON.stringify({ path: filename, timeout: 900 })
+  });
+  stop();
+  if (res.error) { xferFoot(name, `<span style="color:var(--dead)">${res.error}</span>`); return; }
+  const blob = new Blob([b64ToBytes(res.b64)], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  xferFoot(name, `downloaded ${esc(filename)} (${HUMAN(res.size)}) &rarr; browser downloads`);
+}
+
+async function xferUpload(name, files) {
+  for (const f of files) {
+    const stop = xferWatch(name, `uploading ${esc(f.name)}`);
+    xferFoot(name, `reading ${esc(f.name)} ...`);
+    const bytes = new Uint8Array(await f.arrayBuffer());
+    const res = await api(`/api/sessions/${name}/put`, {
+      method: 'POST',
+      body: JSON.stringify({ path: f.name, b64: bytesToB64(bytes), timeout: 900 })
+    });
+    stop();
+    if (res.error) {
+      xferFoot(name, `<span style="color:var(--dead)">${esc(f.name)}: ${res.error}</span>`);
+      return;
+    }
+  }
+  await xferList(name);
+  xferFoot(name, `uploaded ${files.length} file${files.length > 1 ? 's' : ''}`);
+}
+
+async function openTransfer(host) {
+  const name = host + '-xfer';
+  if (sessions.has(name)) return show(name);
+  say(`opening a transfer tab for ${host} — touch your key`);
+  const res = await api('/api/sessions', {
+    method: 'POST', body: JSON.stringify({ name: host, kind: 'transfer' })
+  });
+  if (res.error) { say('error: ' + res.error); return; }
+  const s = makeXferPane(res.name, res.host);
+  s.tab = makeTab(res.name, res.target, 'transfer', res.host);
+  s.cwd = res.cwd;
+  sessions.set(res.name, s);
+  show(res.name);
+  xferList(res.name);
+  localList(res.name);
+  say(`transfer tab open for ${host}`);
+}
+
+/* ---------- sessions ---------- */
+
+// Sessions can appear and disappear without this page doing anything: an agent
+// opens one over /api/sessions, or a second browser window closes one. Nothing
+// pushed that news here -- the SSE streams are per-session, so there is no
+// channel to announce a session that does not exist yet, and the tab only
+// showed up after a reload. Reconcile against the server instead.
+function adoptSession(info) {
+  // A transfer tab has no terminal and no event stream; adopting it as one
+  // would open an EventSource against a route that refuses it and then mark
+  // the tab dead.
+  if (info.kind === 'transfer') {
+    const s = makeXferPane(info.name, info.host);
+    s.tab = makeTab(info.name, info.target, 'transfer', info.host);
+    s.cwd = info.cwd || '';
+    sessions.set(info.name, s);
+    xferList(info.name);
+    localList(info.name);
+    return s;
+  }
+  const s = makePane(info.name);
+  s.tab = makeTab(info.name, info.target);
+  s.spec = { name: info.name };
+  sessions.set(info.name, s);
+  attachStream(info.name, s);
+  if (!info.alive) markDead(info.name);
+  return s;
+}
+
+// Local teardown only. closeSession() is for closing one *from here*, and would
+// ask the server to close a session that is already gone.
+function forgetSession(name) {
+  const s = sessions.get(name);
+  if (!s) return;
+  if (s.es) s.es.close();
+  s.pane.remove();
+  s.tab.remove();
+  sessions.delete(name);
+  if (active === name) active = null;
+}
+
+let syncing = false;
+async function syncSessions() {
+  if (syncing || document.hidden) return;      // no polling behind a hidden tab
+  syncing = true;
+  try {
+    const list = await api('/api/sessions');
+    if (!Array.isArray(list)) return;          // locked, or the server went away
+    const was = active;                        // the tab you are actually using
+    const live = new Set();
+    for (const info of list) {
+      live.add(info.name);
+      if (!sessions.has(info.name)) {
+        adoptSession(info);
+        say(`${info.name} opened elsewhere`);
+      } else if (!info.alive) {
+        markDead(info.name);
+      }
+    }
+    for (const name of [...sessions.keys()])
+      if (!live.has(name)) { forgetSession(name); say(`${name} closed elsewhere`); }
+
+    // makePane() has to make its pane visible -- xterm measures the font from
+    // a live DOM node -- so adopting a session silently swaps what is on
+    // screen while the tab highlight and `active` stay put. That splits the
+    // view from the session keystrokes actually reach: you would be looking
+    // at the new host and typing into the old one. Put the view back.
+    if (was && sessions.has(was)) show(was);
+    else if (!active && sessions.size) show(sessions.keys().next().value);
+    $('empty').style.display = sessions.size ? 'none' : 'grid';
+  } catch (e) {
+    /* server restarting or unreachable; the next tick will catch up */
+  } finally {
+    syncing = false;
+  }
+}
+
+async function openSession(spec) {
+  say(`connecting ${spec.name} ...`);
+  // Build and fit the terminal first: the session is then started at the real
+  // size, so no resize is needed at connect -- and nothing to leak on screen.
+  const s = makePane(spec.name);
+  // The tab bar changes the pane's height, so add the tab before measuring --
+  // otherwise the first fit is one row off and triggers a needless resize.
+  s.tab = makeTab(spec.name, spec.target || '');
+  s.fit.fit();
+  const rows = s.term.rows, cols = s.term.cols;
+  const res = await api('/api/sessions', {
+    method: 'POST', body: JSON.stringify({ rows, cols, ...spec })
+  });
+  if (res.error) { s.pane.remove(); s.tab.remove(); say('error: ' + res.error); return; }
+  s.tab.title = res.target || spec.target || '';
+  s.spec = spec;
+  s.lastSize = `${rows}x${cols}`;   // already correct; do not re-send it
+  sessions.set(spec.name, s);
+  attachStream(spec.name, s);
+  show(spec.name);
+  say(`${spec.name} connected at ${cols}x${rows}`);
+}
+
+async function closeSession(name) {
+  await api(`/api/sessions/${name}`, { method: 'DELETE' });
+  const s = sessions.get(name);
+  if (s) { if (s.es) s.es.close(); s.pane.remove(); s.tab.remove(); sessions.delete(name); }
+  active = null;
+  const next = sessions.keys().next();
+  if (!next.done) show(next.value); else $('empty').style.display = 'grid';
+  say(`${name} closed`);
+}
+
+async function reconnect(name) {
+  const s = sessions.get(name);
+  const spec = s && s.spec ? s.spec : { name };
+  await closeSession(name);
+  openSession(spec);
+}
+
+/* ---------- file transfer ---------- */
+
+// "verified" is the point of the checksum, so it has to be visible -- and an
+// unverified transfer must not read the same as a verified one.
+function transferNote(res) {
+  const bits = [];
+  if (res.compressed) bits.push('compressed');
+  bits.push(res.verified ? `${res.algorithm} verified` : 'NOT verified');
+  return ', ' + bits.join(', ');
+}
+
+async function uploadFile(name, file) {
+  if (!sessions.has(name)) return;
+  say(`reading ${file.name} ...`);
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let dir = $('f-dir').value.trim();
+  if (!dir) {
+    const pwd = await api(`/api/sessions/${name}/run`, {
+      method: 'POST', body: JSON.stringify({ cmd: 'pwd' })
+    });
+    dir = (pwd.output || '').trim().split('\n').pop().trim() || '.';
+  }
+  const path = dir.replace(/\/$/, '') + '/' + file.name;
+  say(`uploading ${file.name} (${bytes.length.toLocaleString()} bytes) → ${path}`);
+  const res = await api(`/api/sessions/${name}/upload`, {
+    method: 'POST', body: JSON.stringify({ path, b64: bytesToB64(bytes), timeout: 900 })
+  });
+  say(res.ok ? `uploaded ${path} (${res.size.toLocaleString()} bytes${transferNote(res)})`
+             : 'UPLOAD FAILED: ' + res.error);
+}
+
+async function downloadPath(name, path) {
+  say(`downloading ${path} ...`);
+  const res = await api(`/api/sessions/${name}/download`, {
+    method: 'POST', body: JSON.stringify({ path, timeout: 900 })
+  });
+  if (!res.ok) { say('DOWNLOAD FAILED: ' + res.error); return; }
+  const blob = new Blob([b64ToBytes(res.b64)], { type: 'application/octet-stream' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = path.split('/').pop() || 'download';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  say(`downloaded ${path} (${res.size.toLocaleString()} bytes${transferNote(res)})`
+      + ' → browser downloads');
+}
+
+/* ---------- command library ---------- */
+
+// {{name}} placeholders are filled in before the command is sent.
+function fillPlaceholders(cmd) {
+  const seen = {};
+  for (const m of cmd.matchAll(/\{\{(\w+)\}\}/g)) {
+    const key = m[1];
+    if (key in seen) continue;
+    const v = prompt(`Value for ${key}:`, '');
+    if (v === null) return null;
+    seen[key] = v;
+  }
+  return cmd.replace(/\{\{(\w+)\}\}/g, (_, k) => seen[k]);
+}
+
+async function useSnippet(sn, run) {
+  if (!active) { say('no active session'); return; }
+  const cmd = fillPlaceholders(sn.cmd);
+  if (cmd === null) { say('cancelled'); return; }
+  await sendInput(active, run ? cmd + '\n' : cmd);
+  say(run ? `ran: ${sn.name}` : `typed: ${sn.name} — press Enter to run`);
+  { const a = sessions.get(active); if (a && a.term) a.term.focus(); }
+}
+
+async function refreshSnippets() {
+  const snips = await api('/api/snippets');
+  const runBox = $('snipchips'), editBox = $('snipedit');
+  runBox.innerHTML = ''; editBox.innerHTML = '';
+  if (!snips.length) {
+    const msg = '<span style="color:var(--dim)">no saved commands</span>';
+    runBox.innerHTML = editBox.innerHTML = msg;
+    return;
+  }
+  for (const sn of snips) {
+    // Commands section: run only. No delete, nothing to mis-click.
+    const run = document.createElement('div');
+    run.className = 'chip';
+    run.textContent = sn.name;
+    run.title = sn.cmd + '\n\n(shift-click to type without running)';
+    run.onclick = e => useSnippet(sn, !e.shiftKey);
+    runBox.appendChild(run);
+
+    // Settings: the editable copy.
+    const ed = document.createElement('div');
+    ed.className = 'chip';
+    ed.innerHTML = `<span>${sn.name}</span><span class="del" title="delete">&times;</span>`;
+    ed.title = sn.cmd;
+    ed.onclick = async e => {
+      if (e.target.classList.contains('del')) {
+        await api(`/api/snippets/${encodeURIComponent(sn.name)}`, { method: 'DELETE' });
+        refreshSnippets(); say(`deleted "${sn.name}"`); return;
+      }
+      $('sn-name').value = sn.name; $('sn-cmd').value = sn.cmd;
+      say(`editing "${sn.name}"`);
+    };
+    editBox.appendChild(ed);
+  }
+}
+
+$('sn-save').onclick = async () => {
+  const name = $('sn-name').value.trim(), cmd = $('sn-cmd').value.trim();
+  if (!name || !cmd) { say('name and command are both required'); return; }
+  const res = await api('/api/snippets', {
+    method: 'POST', body: JSON.stringify({ name, cmd })
+  });
+  say(res.error ? 'error: ' + res.error : `saved "${name}"`);
+  refreshSnippets();
+};
+$('sn-clear').onclick = () => { $('sn-name').value = ''; $('sn-cmd').value = ''; };
+
+/* ---------- session export ---------- */
+
+$('f-export').onclick = () => {
+  if (!active) { say('no active session'); return; }
+  // Straight off disk: the browser downloads the whole transcript, including
+  // anything that has already scrolled out of memory.
+  const url = `/api/sessions/${active}/log?token=${encodeURIComponent(TOKEN)}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.click();
+  say('exported transcript from ' + (sessions.get(active).logName || 'session log'));
+};
+
+/* ---------- saved hosts ---------- */
+
+// `deletable` is off for the Connect chips on purpose: there, every chip is a
+// one-click connect, and a forget button a few pixels away from it is the kind
+// of neighbour that eventually gets hit by accident. Forgetting belongs in
+// Hosts, where editing a host is what you came to do.
+function hostChip(h, onPick, deletable) {
+  const el = document.createElement('div');
+  el.className = 'chip';
+  el.innerHTML = `<span>${h.name}</span><span class="tag">${h.auth || 'key'}</span>` +
+                 (deletable ? `<span class="del" title="forget">&times;</span>` : '');
+  el.title = h.target + (h.proxy_jump ? ' via ' + h.proxy_jump : '');
+  el.onclick = async e => {
+    if (deletable && e.target.classList.contains('del')) {
+      await api(`/api/hosts/${h.name}`, { method: 'DELETE' });
+      store.set(hostThemeKey(h.name), '');   // no orphan pin for a reused name
+      refreshHosts(); say(`forgot ${h.name}`); return;
+    }
+    onPick(h);
+  };
+  return el;
+}
+
+async function refreshHosts() {
+  const hosts = await api('/api/hosts');
+  HOST_THEMES.clear();
+  for (const h of hosts) if (h.theme) HOST_THEMES.set(h.name, h.theme);
+  const boxes = [$('hostchips'), $('managechips'), $('xferchips')];
+  boxes.forEach(b => b.innerHTML = '');
+  if (!hosts.length) {
+    boxes.forEach(b => b.innerHTML = '<span style="color:var(--dim)">no saved hosts</span>');
+    return;
+  }
+  for (const h of hosts) {
+    $('hostchips').appendChild(hostChip(h, host => {
+      if (host.auth === 'password' && !host.has_saved_password) {
+        loadConnectForm(host); $('c-pass').focus();
+        say('password required for ' + host.name); return;
+      }
+      openSession({ name: host.name });
+    }));
+    $('managechips').appendChild(hostChip(h, loadHostForm, true));
+    $('xferchips').appendChild(hostChip(h, host => openTransfer(host.name)));
+  }
+}
+
+// The ad-hoc form is folded away by default; a saved password-auth host that
+// has no stored password still needs it, so that path opens it deliberately.
+function showAdhoc(on) {
+  $('c-adhoc').hidden = !on;
+  $('c-toggle').classList.toggle('open', on);
+  $('c-toggle').setAttribute('aria-expanded', on ? 'true' : 'false');
+}
+$('c-toggle').onclick = () => showAdhoc($('c-adhoc').hidden);
+
+function loadConnectForm(h) {
+  showAdhoc(true);
+  $('c-name').value = h.name; $('c-target').value = h.target;
+  $('c-auth').value = h.auth || 'key'; $('c-jump').value = h.proxy_jump || '';
+  $('c-key').value = h.key || ''; $('c-cert').value = h.cert || '';
+  authChanged();
+}
+
+function loadHostForm(h) {
+  $('h-name').value = h.name; $('h-target').value = h.target;
+  $('h-auth').value = h.auth || 'key'; $('h-port').value = h.port || '';
+  $('h-key').value = h.key || h.cert || ''; $('h-jump').value = h.proxy_jump || '';
+  buildHostThemePicker();
+  $('h-theme').value = h.theme || store.get(hostThemeKey(h.name), '');
+  $('h-auth').onchange();
+  say(`editing ${h.name}`);
+}
+
+function buildHostThemePicker() {
+  const sel = $('h-theme');
+  if (sel.options.length) return;
+  sel.add(new Option('(use the default)', ''));
+  for (const [key, v] of Object.entries(TERM_THEMES)) sel.add(new Option(v.label, key));
+}
+
+// Written straight through on change, like the Terminal pane -- it is a local
+// preference, not part of the host record that `save` posts to the server.
+$('h-theme').onchange = () => {
+  const name = $('h-name').value.trim();
+  if (!name) { say('pick or name a host first'); $('h-theme').value = ''; return; }
+  const pick = $('h-theme').value;
+  store.set(hostThemeKey(name), pick);
+  applyTermStyle();
+  say(pick ? `${name} pinned to ${TERM_THEMES[pick].label}`
+           : `${name} back to the default theme`);
+};
+
+/* ---------- forms ---------- */
+
+function authChanged() {
+  const a = $('c-auth').value;
+  document.querySelector('.opt-key').hidden = (a === 'password');
+  document.querySelector('.opt-cert').hidden = (a !== 'cert');
+  document.querySelector('.opt-pass').hidden = (a !== 'password');
+}
+$('c-auth').onchange = authChanged;
+$('h-auth').onchange = () => {
+  const pw = $('h-auth').value === 'password';
+  document.querySelectorAll('.h-pass').forEach(el => el.hidden = !pw);
+};
+
+$('c-go').onclick = () => {
+  const spec = { name: $('c-name').value.trim(), target: $('c-target').value.trim(),
+                 auth: $('c-auth').value };
+  if (!spec.name || !spec.target) { say('name and target are both required'); return; }
+  if ($('c-jump').value.trim()) spec.proxy_jump = $('c-jump').value.trim();
+  if (spec.auth === 'password') spec.password = $('c-pass').value;
+  else {
+    if ($('c-key').value.trim()) spec.key = $('c-key').value.trim();
+    if (spec.auth === 'cert' && $('c-cert').value.trim()) spec.cert = $('c-cert').value.trim();
+  }
+  $('c-pass').value = '';
+  openSession(spec);
+};
+
+$('h-save').onclick = async () => {
+  const host = { name: $('h-name').value.trim(), target: $('h-target').value.trim(),
+                 auth: $('h-auth').value, port: $('h-port').value.trim() || null,
+                 proxy_jump: $('h-jump').value.trim() || null,
+                 theme: $('h-theme').value || null };
+  if (!host.name || !host.target) { say('name and target are both required'); return; }
+  const f = $('h-key').value.trim();
+  if (f) { if (host.auth === 'cert') host.cert = f; else host.key = f; }
+  if (host.auth === 'password' && $('h-remember').checked) {
+    host.password = $('h-pass').value; host.remember_password = true;
+  }
+  const res = await api('/api/hosts', { method: 'POST', body: JSON.stringify(host) });
+  $('h-pass').value = '';
+  say(res.error ? 'error: ' + res.error : `saved ${host.name}`);
+  await refreshHosts();
+  // A server without the `theme` field drops it, and HOST_THEMES comes back
+  // empty for this host -- say so rather than letting the pin look saved.
+  if (!res.error && host.theme && !HOST_THEMES.get(host.name))
+    say(`saved ${host.name} — theme kept on this machine only until the server restarts`);
+  applyTermStyle();
+};
+$('h-clear').onclick = () => {
+  for (const id of ['h-name', 'h-target', 'h-port', 'h-key', 'h-jump', 'h-pass']) $(id).value = '';
+  $('h-theme').value = '';       // clearing the form must not re-pin the next host
+  say('form cleared');
+};
+
+// One file at a time over the open shell. The transfer tab above covers most of
+// what this did, so it folds away the same way the ad-hoc connect form does.
+function showInband(on) {
+  $('f-inband').hidden = !on;
+  $('f-toggle').classList.toggle('open', on);
+  $('f-toggle').setAttribute('aria-expanded', on ? 'true' : 'false');
+}
+$('f-toggle').onclick = () => showInband($('f-inband').hidden);
+
+$('f-download').onclick = () => {
+  const p = $('f-get').value.trim();
+  if (!active) { say('no active session'); return; }
+  if (!p) { say('enter a remote path'); return; }
+  downloadPath(active, p);
+};
+$('f-pick').onclick = () => $('f-file').click();
+$('f-file').onchange = e => {
+  const f = e.target.files[0];
+  if (f && active) uploadFile(active, f);
+  e.target.value = '';
+};
+$('f-get').addEventListener('keydown', e => { if (e.key === 'Enter') $('f-download').click(); });
+
+/* ---------- settings ---------- */
+
+function loadConfig() {
+  return api('/api/config').then(cfg => {
+    if (!cfg || !cfg.default_key) return;
+    $('c-key').placeholder = 'default: ' + cfg.default_key;
+    $('h-key').placeholder = 'default: ' + cfg.default_key;
+    $('cfg-key').value = cfg.default_key;
+    $('cfg-max').value = cfg.max_inline;
+    $('cfg-note').textContent =
+      'Host keys: ' + cfg.known_hosts.split(/[\\/]/).pop() + ', beside the app.';
+  });
+}
+$('cfg-save').onclick = async () => {
+  const res = await api('/api/config', {
+    method: 'POST',
+    body: JSON.stringify({ default_key: $('cfg-key').value.trim(),
+                           max_inline: parseInt($('cfg-max').value, 10) || undefined })
+  });
+  if (res.error) { say('error: ' + res.error); return; }
+  await loadConfig();
+  say(res.exists ? 'settings saved — applies to new sessions'
+                 : `saved, but that key file does not exist: ${res.default_key}`);
+};
+
+/* ---------- find ---------- */
+
+function openFind() { $('find').classList.add('open'); $('s-text').focus(); $('s-text').select(); }
+const findNext = () => active && sessions.get(active).search.findNext($('s-text').value);
+const findPrev = () => active && sessions.get(active).search.findPrevious($('s-text').value);
+$('s-next').onclick = findNext;
+$('s-prev').onclick = findPrev;
+$('s-close').onclick = () => {
+  $('find').classList.remove('open');
+  { const a = active && sessions.get(active); if (a && a.term) a.term.focus(); }
+};
+$('s-text').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.shiftKey ? findPrev() : findNext(); }
+  if (e.key === 'Escape') $('s-close').click();
+});
+
+/* ---------- window ---------- */
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(refit, 150);
+});
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && $('settings').classList.contains('on')) {
+    showSettings(false); e.preventDefault(); return;
+  }
+  if (e.altKey && e.key >= '1' && e.key <= '9') {
+    const pick = [...sessions.keys()][parseInt(e.key, 10) - 1];
+    if (pick) { show(pick); e.preventDefault(); }
+  }
+  if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'f') { openFind(); e.preventDefault(); }
+});
+
+/* ---------- unlock gate ---------- */
+
+// Every other /api/* route answers 423 until this succeeds, so the whole app
+// waits behind it rather than booting into a wall of failed requests.
+async function unlockGate() {
+  const st = await api('/api/state');
+  if (st.locked === false) return;
+
+  // Offer to CREATE a vault only on an explicit has_vault:false. Anything
+  // else -- an error object, a stale token, a reply we do not recognise --
+  // must not be guessed at, because guessing "create" puts a form on screen
+  // whose submit button would seal a new vault over an existing one.
+  if (st.has_vault !== true && st.has_vault !== false) {
+    $('lock').classList.add('on');
+    $('lock-title').textContent = 'Cannot reach the console';
+    $('lock-why').textContent =
+      'The server did not answer with a lock state. It may have restarted ' +
+      'since this page was loaded -- reload it. Reported: ' +
+      (st.error || JSON.stringify(st));
+    $('lock-pass').closest('label').hidden = true;
+    $('lock-go').hidden = true;
+    return new Promise(() => {});          // stay here; do not boot the app
+  }
+
+  const creating = !st.has_vault;
+  $('lock').classList.add('on');
+  if (creating) {
+    $('lock-title').textContent = 'Choose a master password';
+    $('lock-why').innerHTML =
+      'No vault found, so this creates a new one at:<br>' +
+      '<code style="color:var(--fg);word-break:break-all">' +
+      (st.vault_path || '?').replace(/[<&]/g, c => ({'<': '&lt;', '&': '&amp;'}[c])) +
+      '</code><br><br>' +
+      'If you already have a vault, <b>stop</b> — you are pointed at the ' +
+      'wrong folder or the wrong port (' + (st.port ?? '?') + '). Creating ' +
+      'one here does not open the other. Otherwise: this password seals your ' +
+      'saved SSH passwords and gates the console. There is no recovery. ' +
+      'Use at least 8 characters.';
+    $('lock-confirm-row').hidden = false;
+    $('lock-go').textContent = 'create vault';
+  }
+  $('lock-pass').focus();
+
+  await new Promise(resolve => {
+    $('lock-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const pass = $('lock-pass').value;
+      if (!pass) return;
+      $('lock-go').disabled = true;
+      $('lock-err').textContent = '';
+      let res;
+      try {
+        res = await api('/api/unlock', {
+          method: 'POST',
+          body: JSON.stringify(creating
+            ? { password: pass, confirm: $('lock-confirm').value }
+            : { password: pass })
+        });
+      } catch (err) {
+        res = { error: String(err) };
+      }
+      if (res.ok) {
+        $('lock').classList.remove('on');
+        return resolve();
+      }
+      // Never leave a rejected password sitting in the DOM.
+      $('lock-pass').value = '';
+      if (creating) $('lock-confirm').value = '';
+      $('lock-err').textContent = res.attempts_left === 0
+        ? (res.error || 'locked out') + ' -- restart the server to try again'
+        : (res.error || 'unlock failed') +
+          (res.attempts_left != null ? ` (${res.attempts_left} left)` : '');
+      $('lock-go').disabled = res.attempts_left === 0;
+      $('lock-pass').focus();
+    });
+  });
+}
+
+/* ---------- boot ---------- */
+
+async function boot() {
+  // Always start collapsed -- the terminal is the point, the sidebar is a detour.
+  // The last section is still remembered, so expanding returns you to it.
+  setCollapsed(true);
+  // A remembered 'sec-settings' predates the settings screen and no longer
+  // names a strip, so fall back rather than opening nothing.
+  const remembered = store.get('section', 'sec-connect') || 'sec-connect';
+  openSection($(remembered) ? remembered : 'sec-connect');
+
+  await unlockGate();
+
+  loadConfig();
+  refreshHosts();
+  refreshSnippets();
+
+  const list = await api('/api/sessions');
+  for (const info of list) adoptSession(info);
+  if (list.length) show(list[0].name);
+
+  // Cheap: a few hundred bytes of JSON over loopback. Paused while the tab is
+  // hidden, and re-run the moment it comes back so switching to the window is
+  // enough to bring it up to date.
+  setInterval(syncSessions, 4000);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) syncSessions();
+  });
+}
+
+boot();
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+[
+  {
+    "name": "web-01",
+    "target": "deploy@web-01.example.com",
+    "auth": "key",
+    "key": null,
+    "cert": null,
+    "port": null,
+    "theme": null
+  },
+  {
+    "name": "db-01",
+    "target": "dba@db-01.example.com",
+    "auth": "key",
+    "key": "%USERPROFILE%/.ssh/id_ed25519_db",
+    "cert": null,
+    "port": 2222,
+    "theme": "gruvbox"
+  },
+  {
+    "name": "vault",
+    "target": "admin@10.0.0.11",
+    "auth": "key",
+    "key": null,
+    "cert": null,
+    "port": null,
+    "proxy_jump": "deploy@web-01.example.com",
+    "theme": "amber"
+  }
+]
