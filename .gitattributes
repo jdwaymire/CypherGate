@@ -1,0 +1,17 @@
+# Line endings are normalized to LF in the repository. Working-copy endings
+# follow the rules below, so a clone behaves the same whatever the cloner's
+# core.autocrlf happens to be.
+* text=auto
+
+# cmd.exe can mis-handle an LF-only batch file in labels and multi-line
+# blocks, so this one is pinned to CRLF on disk.
+*.cmd text eol=crlf
+
+# Vendored runtimes: never transform these. Git's own binary detection would
+# catch most of them, but .pyd and .cat are unusual enough to state outright.
+*.pyd binary
+*.dll binary
+*.exe binary
+*.zip binary
+*.cat binary
+*.jpg binary
