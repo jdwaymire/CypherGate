@@ -2858,6 +2858,23 @@ class Console(ThreadingHTTPServer):
     else still gets its traceback.
     """
 
+    # On Windows SO_REUSEADDR does not mean "rebind after TIME_WAIT", it means
+    # "share the port with whoever already has it". HTTPServer sets it, so a
+    # second server -- an autostart copy, a leaked test sandbox -- bound 8765
+    # alongside the first without a word. Ctrl-C then stopped one while the
+    # other kept answering the browser, which looked exactly like Ctrl-C
+    # being ignored. Claim the port exclusively there instead, so a second
+    # copy fails loudly at startup. POSIX keeps the stock behaviour.
+    if os.name == "nt":
+        allow_reuse_address = False
+
+    def server_bind(self):
+        if os.name == "nt":
+            import socket
+            self.socket.setsockopt(socket.SOL_SOCKET,
+                                   socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
     def handle_error(self, request, client_address):
         if isinstance(sys.exc_info()[1], ConnectionError):
             return
@@ -2889,7 +2906,14 @@ def main():
         LOCKED = False
         finish_unlock()
 
-    srv = Console((HOST, PORT), Handler)
+    try:
+        srv = Console((HOST, PORT), Handler)
+    except OSError as exc:
+        print("cannot listen on %s:%d -- %s" % (HOST, PORT, exc.strerror or exc))
+        print("Another copy of the console (or something else) already has "
+              "that port.")
+        print("Stop it first, or set CYPHERGATE_PORT to use a different one.")
+        raise SystemExit(1)
     srv.daemon_threads = True
     print("ssh console listening on http://%s:%d" % (HOST, PORT))
     print("open that in your browser; Ctrl-C here to stop everything")

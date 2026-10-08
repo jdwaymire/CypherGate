@@ -248,7 +248,9 @@ binds `http://127.0.0.1:8765`, and opens your browser there.
 4. **Connect.** Open **Connect** in the sidebar and click a host chip. Touch
    your key once. You have a terminal.
 
-Change the port with `CYPHERGATE_PORT` if 8765 is taken.
+Change the port with `CYPHERGATE_PORT` if 8765 is taken. Only one copy can
+hold a port: a second one refuses to start with `cannot listen on
+127.0.0.1:8765`, rather than quietly sharing it with the first.
 
 ### Keyboard
 
