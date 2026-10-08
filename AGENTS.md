@@ -194,6 +194,11 @@ handing back bad data.
 `md5sum` or `sha256sum`. The bytes are probably fine, but say so rather than
 calling it verified.
 
+An upload checks that the target can be written **before** sending anything. A
+missing directory or a path without permission fails with `ok: false` and
+`cannot write ... nothing was sent`, and the session is left as it was. Create
+the directory first if it should exist.
+
 ## Transfer tabs
 
 For anything more than a file or two — browsing, several files, a directory
@@ -278,6 +283,10 @@ as for shells. Closing it costs nothing; reopening costs a touch.
   memory was spent. Open a transfer tab and use `pull`/`push`, which stream
   through disk and have no ceiling. Do not raise `max_inline` to get around it
   without asking.
+- **`cannot write ... on the remote ... nothing was sent`** — an upload whose
+  target directory is missing, or which you have no permission to write. No
+  bytes left this machine and the shell is unchanged. Fix the path, or create
+  the directory, and upload again.
 - **`not found`** (404) on a route you believe exists — check the verb. Shell
   verbs and transfer verbs are separate sets, and a verb in neither is a plain
   404 rather than a confusing complaint about the wrong kind of tab.

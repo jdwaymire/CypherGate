@@ -3,6 +3,10 @@
 <head>
 <meta charset="utf-8">
 <title>CypherGate</title>
+<!-- Inline so it needs no route: /static serves everything as JavaScript, and
+     an image there would mean a server change and a restart. Strokes, not
+     text, so it stays crisp at 16px whatever fonts the machine has. -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231c1f26'/%3E%3Crect x='1' y='1' width='30' height='30' rx='6' fill='none' stroke='%232c313c' stroke-width='2'/%3E%3Cpath d='M8 10l6 6-6 6' fill='none' stroke='%236ea8fe' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M16 23h8' stroke='%234ade80' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/xterm.css">
 <script src="/static/xterm.js"></script>
 <script src="/static/xterm-addon-fit.js"></script>
@@ -1007,14 +1011,17 @@ function makeTab(name, target, kind, host) {
   return tab;
 }
 
-function show(name) {
+// `focus` is false for the background poll: it only puts the view back, and
+// taking focus every four seconds pulled it out of whatever field the owner
+// was typing in -- settings, the connect form, the find box.
+function show(name, focus = true) {
   active = name;
   for (const [n, s] of sessions) {
     s.pane.classList.toggle('active', n === name);
     s.tab.classList.toggle('active', n === name);
   }
   const s = sessions.get(name);
-  if (s && s.term) { s.fit.fit(); s.term.focus(); pushSize(name); }
+  if (s && s.term) { s.fit.fit(); if (focus) s.term.focus(); pushSize(name); }
   applyGlow(name);          // the halo belongs to the tab now in front
   $('empty').style.display = sessions.size ? 'none' : 'grid';
 }
@@ -1524,8 +1531,8 @@ async function syncSessions() {
     // screen while the tab highlight and `active` stay put. That splits the
     // view from the session keystrokes actually reach: you would be looking
     // at the new host and typing into the old one. Put the view back.
-    if (was && sessions.has(was)) show(was);
-    else if (!active && sessions.size) show(sessions.keys().next().value);
+    if (was && sessions.has(was)) show(was, false);
+    else if (!active && sessions.size) show(sessions.keys().next().value, false);
     $('empty').style.display = sessions.size ? 'none' : 'grid';
   } catch (e) {
     /* server restarting or unreachable; the next tick will catch up */

@@ -476,6 +476,11 @@ Both directions are capped at `max_inline` (64 MB by default) and refuse
 anything larger with `413`, before spending the memory. For bigger files use a
 transfer tab's `pull`/`push`, which stream through disk and have no ceiling.
 
+Upload checks that the target can be written before sending any of the
+payload. A missing directory, a directory in the way, or no permission returns
+`{ok: false, error: "cannot write <path> on the remote: ... nothing was sent"}`
+and leaves the session untouched.
+
 ---
 
 ## Transfer tabs

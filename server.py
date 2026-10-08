@@ -1071,8 +1071,15 @@ class Session:
             # already queued in the pty input buffer. Everything sent in the
             # same breath is silently thrown away -- so wait for the prompt
             # before sending the command that matters.
+            #
+            # ignoreeof goes on for the duration, remembering what it was. The
+            # payload ends in a Ctrl-D, and if anything makes the receiver
+            # quit early -- a full disk, a decode error -- the rest of the
+            # payload lands at the prompt and that Ctrl-D logs the shell out,
+            # which costs a key touch to undo.
             baseline = self.osc_n
-            self.write(b"stty -echo\n")
+            self.write(b"stty -echo; __ieo=$(shopt -po ignoreeof 2>/dev/null); "
+                       b"set -o ignoreeof 2>/dev/null\n")
             if baseline:
                 self._wait_prompt(baseline, 5)
             else:
@@ -1082,13 +1089,29 @@ class Session:
             # command loses it -- the file gets created, and stays empty. So
             # have the remote announce that it is about to read, and only
             # then send the bytes.
+            #
+            # Only announce ready once the target is known to be writable. The
+            # redirect failing after the announcement -- a missing directory,
+            # say -- used to mean the payload was typed at the prompt and run
+            # line by line as commands, then the Ctrl-D logged the shell out.
+            # The refusal carries the same token with NO in front, so one wait
+            # covers both answers; printf writes it in one go, so the prefix
+            # is always there by the time the token is.
             rdy = "RDY" + uuid.uuid4().hex[:10]
-            self.write((f"printf '%s%s' '{rdy[:3]}' '{rdy[3:]}'; "
-                        f"{sink}" + "\n").encode())
-            _, ridx = self._await_marker(rdy, time.time() + 15)
+            self.write((f"if : > {quoted} 2>/dev/null; then "
+                        f"printf '%s%s' '{rdy[:3]}' '{rdy[3:]}'; {sink}; "
+                        f"else stty echo; eval \"$__ieo\"; "
+                        f"printf '%s%s%s\\n' 'NO' '{rdy[:3]}' '{rdy[3:]}'; fi"
+                        + "\n").encode())
+            buf, ridx = self._await_marker(rdy, time.time() + 15)
             if ridx == -1:
                 return {"ok": False,
                         "error": "remote never signalled ready to receive"}
+            if buf[max(0, ridx - 2):ridx] == b"NO":
+                return {"ok": False,
+                        "error": "cannot write %s on the remote: missing "
+                                 "directory, a directory in the way, or no "
+                                 "permission; nothing was sent" % path}
             # Lines stay at 76 characters -- canonical mode caps how long a
             # line the remote pty will take -- but there is no reason to
             # spend a write on each of them. A 20MB upload is 350k lines,
@@ -1114,7 +1137,7 @@ class Session:
             sumcmd = (f"\"$({alg}sum {quoted} | cut -d' ' -f1)\""
                       if alg else "none")
             self.write(
-                (f"__rc=$?; stty echo; "
+                (f"__rc=$?; stty echo; eval \"$__ieo\"; "
                  f"printf '%s%s %s %s %s\\n' '{head}' '{tail}' \"$__rc\" "
                  f"\"$(wc -c < {quoted} 2>/dev/null)\" {sumcmd}"
                  + "\n").encode())
